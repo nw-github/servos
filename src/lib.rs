@@ -3,3 +3,5 @@
 
 pub mod lock;
 pub mod riscv;
+pub mod sbi;
+pub mod ns16550;

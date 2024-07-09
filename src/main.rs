@@ -2,16 +2,13 @@
 #![no_main]
 #![feature(naked_functions)]
 #![feature(asm_const)]
-#![feature(concat_idents)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use core::{
-    mem::MaybeUninit,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::{mem::MaybeUninit, ptr::addr_of};
 
-use config::{MAX_CPUS, STACK_LEN};
+use config::{HART_STACK_LEN, MAX_CPUS};
 use servos::riscv;
+use uart::SbiConsole;
 
 mod config;
 mod uart;
@@ -19,7 +16,7 @@ mod uart;
 #[repr(C, align(16))]
 pub struct Align16<T>(pub T);
 
-static mut KSTACK: Align16<MaybeUninit<[[u8; STACK_LEN]; MAX_CPUS]>> =
+static mut KSTACK: Align16<MaybeUninit<[[u8; HART_STACK_LEN]; MAX_CPUS]>> =
     Align16(MaybeUninit::uninit());
 
 #[inline(always)]
@@ -40,27 +37,7 @@ fn on_panic(info: &core::panic::PanicInfo) -> ! {
 #[naked]
 #[no_mangle]
 #[link_section = ".text.init"]
-extern "C" fn _start() {
-    extern "C" fn init() -> ! {
-        use riscv::*;
-
-        // set return privilege level to supervisor
-        w_mstatus(r_mstatus() & !MSTATUS_MPP_MASK | MSTATUS_MPP_S);
-        w_mepc(kmain as usize); // set return address to main
-        w_satp(0); // disable paging
-
-        w_medeleg(0xffff); // delegate all exceptions to supervisor mode
-        w_mideleg(0xffff); // delegate all interrupts to supervisor mode
-        w_sie(r_sie() | SIE_STIE | SIE_SEIE | SIE_SSIE); // enable traps
-
-        w_pmpaddr0(0x3fffffffffffff); // allow supervisor mode to access all memory
-        w_pmpcfg0(0xf);
-
-        w_tp(r_mhartid());
-
-        unsafe { core::arch::asm!("mret", options(noreturn)) };
-    }
-
+extern "C" fn _start() -> ! {
     unsafe {
         core::arch::asm!(
             r"
@@ -69,48 +46,38 @@ extern "C" fn _start() {
             la      gp, _global_pointer
             .option pop
 
-            csrr    a1, mhartid
-            li      a2, {max_cpus}
-            bgeu    a1, a2, 0
-
+            mv      tp, a0
             la      sp, {stack}
-            li      a0, {stack_len}
-            addi    a1, a1, 1
-            mul     a0, a0, a1
-            add     sp, sp, a0
-            tail    {init}
+            li      t0, {stack_len}
+            addi    t1, a0, 1
+            mul     t0, t0, t1
+            add     sp, sp, t0
+            tail    {init}",
 
-            0:
-            wfi
-            j       0
-            ",
-
-            init = sym init,
+            init = sym kmain,
             stack = sym KSTACK,
-            stack_len = const STACK_LEN,
-            max_cpus = const MAX_CPUS,
+            stack_len = const HART_STACK_LEN,
             options(noreturn),
         );
     }
 }
 
-extern "C" fn kmain() -> ! {
-    static INITIALIZED: AtomicBool = AtomicBool::new(false);
+extern "C" {
+    static _kernel_end: u8;
+}
 
-    let hartid = riscv::r_tp();
-    if hartid == 0 {
-        unsafe {
-            uart::init(0x1000_0000);
-        }
+extern "C" fn kmain(hartid: usize, arg1: *mut u8) -> ! {
+    println!(
+        "\n\nHello world from kernel hart {}!\ntp: {:#x}\narg1: {:?}\n_kernel_end: {:?}",
+        hartid,
+        riscv::r_tp(),
+        arg1,
+        unsafe { addr_of!(_kernel_end) },
+    );
 
-        INITIALIZED.store(true, Ordering::SeqCst);
-    } else {
-        while !INITIALIZED.load(Ordering::SeqCst) {
-            core::hint::spin_loop();
+    loop {
+        if let Some(ch) = SbiConsole::read() {
+            println!("{:#02x}: {}", ch, ch as char);
         }
     }
-
-    println!("Hello world from hart {}!", hartid);
-
-    halt()
 }

@@ -55,13 +55,8 @@ read_register!(stval);
 read_register!(time);
 read_register!(mhartid);
 
-#[inline(always)]
-pub fn w_tp(val: usize) {
-    unsafe { core::arch::asm!("mv tp, {val}", val = in(reg) val) };
-}
-
-#[inline(always)]
 #[must_use]
+#[inline(always)]
 pub fn r_tp() -> usize {
     let val: usize;
     unsafe { core::arch::asm!("mv {val}, tp", val = out(reg) val) };

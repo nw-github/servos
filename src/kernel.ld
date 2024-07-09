@@ -2,7 +2,7 @@ OUTPUT_ARCH("riscv")
 ENTRY(_start)
 
 MEMORY {
-  ram   (wxa) : ORIGIN = 0x80000000, LENGTH = 128M
+  ram   (wxa) : ORIGIN = 0x80200000, LENGTH = 128M
 }
 
 PHDRS {
@@ -17,23 +17,23 @@ SECTIONS {
   .text : {                     # put code first
     *(.text.init)
     *(.text .text.*)            # then put anything else in .text
-  } >ram AT>ram :text           # put this section into the text segment
+  } >ram
 
   PROVIDE(_global_pointer = .); # this is magic, google "linker relaxation"
 
   .rodata : {                   # next, read-only data
     *(.rodata .rodata.*)
-  } >ram AT>ram :text           # goes into the text segment as well (since instructions are generally read-only)
+  } >ram
 
   .data : {                     # and the data section
     *(.sdata .sdata.*) *(.data .data.*)
-  } >ram AT>ram :data           # this will go into the data segment
+  } >ram
 
   .bss :{                       # finally, the BSS
-    PROVIDE(_bss_start = .);    # define a variable for the start of this section
+    PROVIDE(_bss_start = .);
     *(.sbss .sbss.*) *(.bss .bss.*)
-    PROVIDE(_bss_end = .);      # ... and one at the end
-  } >ram AT>ram :bss            # and this goes into the bss segment
+    PROVIDE(_bss_end = .);
+  } >ram
 
   PROVIDE(_kernel_end = .);
 }
