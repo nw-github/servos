@@ -1,84 +1,37 @@
-use core::{
-    cell::UnsafeCell,
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 
-pub struct SpinLocked<T> {
-    data: UnsafeCell<T>,
-    locked: AtomicBool,
-}
+use lock_api::GuardSend;
 
-unsafe impl<T> Sync for SpinLocked<T> {}
+pub struct SpinLock(AtomicBool);
 
-impl<T> SpinLocked<T> {
-    pub const fn new(data: T) -> Self {
-        Self {
-            data: UnsafeCell::new(data),
-            locked: AtomicBool::new(false),
-        }
-    }
+unsafe impl lock_api::RawMutex for SpinLock {
+    #[allow(clippy::declare_interior_mutable_const)]
+    const INIT: Self = Self(AtomicBool::new(false));
 
-    pub fn lock(&self) -> Guard<T> {
+    type GuardMarker = GuardSend;
+
+    fn lock(&self) {
         // TODO: disable interrupts
         while self
-            .locked
+            .0
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            while self.locked.load(Ordering::Relaxed) {
+            while self.0.load(Ordering::Relaxed) {
                 core::hint::spin_loop();
             }
         }
-
-        Guard::new(self)
     }
 
-    pub fn try_lock(&self) -> Option<Guard<T>> {
-        self.locked
+    fn try_lock(&self) -> bool {
+        self.0
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .ok()
-            .map(|_| Guard::new(self))
+            .is_ok()
     }
 
     unsafe fn unlock(&self) {
-        self.locked.store(false, Ordering::Release)
+        self.0.store(false, Ordering::Release)
     }
 }
 
-pub struct Guard<'a, T> {
-    lock: &'a SpinLocked<T>,
-    _no_sync: PhantomData<*mut ()>,
-}
-
-impl<'a, T> Guard<'a, T> {
-    pub fn new(lock: &'a SpinLocked<T>) -> Self {
-        Self {
-            lock,
-            _no_sync: PhantomData,
-        }
-    }
-}
-
-impl<T> Drop for Guard<'_, T> {
-    fn drop(&mut self) {
-        unsafe {
-            self.lock.unlock();
-        }
-    }
-}
-
-impl<T> Deref for Guard<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*self.lock.data.get() }
-    }
-}
-
-impl<T> DerefMut for Guard<'_, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.lock.data.get() }
-    }
-}
+pub type SpinLocked<T> = lock_api::Mutex<SpinLock, T>;

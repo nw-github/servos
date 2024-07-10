@@ -1,21 +1,21 @@
 use servos::{lock::SpinLocked, sbi};
 
-pub static CONS: SpinLocked<Option<SbiConsole>> = SpinLocked::new(Some(SbiConsole));
+pub static CONS: SpinLocked<SbiConsole> = SpinLocked::new(SbiConsole);
 
 #[macro_export]
 macro_rules! print {
     ($($arg: tt)*) => ({
         use core::fmt::Write;
-        $crate::uart::CONS.lock().as_mut().map(|writer| {
-            _ = writer.write_fmt(format_args!($($arg)*));
-        });
+        _ = write!($crate::uart::CONS.lock(), $($arg)*);
     });
 }
 
 #[macro_export]
 macro_rules! println {
-    ($fmt: expr) => ($crate::print!(concat!($fmt, "\n")));
-    ($fmt: expr, $($arg: tt)*) => ($crate::print!(concat!($fmt, "\n"), $($arg)*));
+    ($($arg: tt)*) => ({
+        use core::fmt::Write;
+        _ = writeln!($crate::uart::CONS.lock(), $($arg)*);
+    });
 }
 
 pub struct SbiConsole;
