@@ -9,9 +9,20 @@
             "request": "custom",
             "name": "Debug executable 'rv-os'",
             "targetCreateCommands": [
-                "target create ${workspaceFolder}/target/riscv64imac-unknown-none-elf/debug/rv-os"
+                "target create ${workspaceFolder}/target/riscv64imac-unknown-none-elf/debug/servos",
             ],
-            "processCreateCommands": ["gdb-remote localhost:1234"]
+            "processCreateCommands": ["gdb-remote localhost:1234", "c"]
+        },
+        {
+            "type": "gdb",
+            "name": "Attach remote with GDB",
+            "request": "attach",
+            "target": ":1234",
+            "remote": true,
+            "cwd": "${workspaceRoot}/src",
+            "gdbpath": "/usr/bin/riscv64-elf-gdb",
+            "valuesFormatting": "parseText",
+            "executable": "${workspaceFolder}/target/riscv64imac-unknown-none-elf/debug/servos"
         }
     ]
 }
