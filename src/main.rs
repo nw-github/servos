@@ -9,12 +9,13 @@ use core::{mem::MaybeUninit, ptr::addr_of};
 use arrayvec::{ArrayString, ArrayVec};
 use config::{HART_STACK_LEN, MAX_CPUS};
 use fdt_rs::{
-    base::DevTree,
-    error::DevTreeError,
+    base::{DevTree, DevTreeNode},
     prelude::{FallibleIterator, PropReader},
 };
-use servos::riscv;
-use uart::SbiConsole;
+use servos::{
+    drivers::{Ns16550a, Syscon},
+    riscv::halt,
+};
 
 mod config;
 mod dump_fdt;
@@ -25,15 +26,6 @@ pub struct Align16<T>(pub T);
 
 static mut KSTACK: Align16<MaybeUninit<[[u8; HART_STACK_LEN]; MAX_CPUS + 1]>> =
     Align16(MaybeUninit::uninit());
-
-#[inline(always)]
-fn halt() -> ! {
-    loop {
-        unsafe {
-            core::arch::asm!("wfi");
-        }
-    }
-}
 
 #[panic_handler]
 fn on_panic(info: &core::panic::PanicInfo) -> ! {
@@ -73,48 +65,22 @@ extern "C" {
     static _kernel_end: u8;
 }
 
-struct Syscon {
-    base: *mut u32,
-    shutdown_magic: u32,
-    restart_magic: u32,
+unsafe fn find_reg_addr(node: &DevTreeNode) -> Option<usize> {
+    // TODO: assuming u64 addresses and sizes
+    node.props()
+        .find(|prop| prop.name().map(|n| n == "reg"))
+        .ok()
+        .flatten()
+        .and_then(|prop| prop.u64(0).ok().map(|s| s as usize))
 }
 
-impl Syscon {
-    pub unsafe fn init_with_magic(
-        base: *mut u32,
-        shutdown_magic: u32,
-        restart_magic: u32,
-    ) -> Self {
-        Self {
-            base,
-            shutdown_magic,
-            restart_magic,
-        }
-    }
-
-    pub fn shutdown(&self) -> ! {
-        unsafe { self.base.write_volatile(self.shutdown_magic) };
-        halt()
-    }
-
-    pub fn restart(&self) -> ! {
-        unsafe { self.base.write_volatile(self.restart_magic) };
-        halt()
-    }
-}
-
-unsafe fn locate_syscon(dt: &DevTree) -> Option<Syscon> {
+unsafe fn init_syscon(dt: &DevTree) -> Option<Syscon> {
     let node = dt
         .compatible_nodes("syscon")
         .iterator()
         .next()
         .and_then(|n| n.ok())?;
-    // TODO: assuming u64 addresses and sizes
-    let base = node
-        .props()
-        .iterator()
-        .find_map(|prop| prop.ok().filter(|p| p.name().is_ok_and(|n| n == "reg")))
-        .and_then(|prop| prop.u64(0).ok())?;
+    let base = unsafe { find_reg_addr(&node)? };
     // TODO: search device tree for these
     let shutdown_magic = 0x5555;
     let restart_magic = 0x7777;
@@ -127,7 +93,36 @@ unsafe fn locate_syscon(dt: &DevTree) -> Option<Syscon> {
     }
 }
 
+unsafe fn init_uart(dt: &DevTree) -> bool {
+    let Ok(Some(node)) = dt.compatible_nodes("ns16550a").next() else {
+        return false;
+    };
+
+    let Some(base) = (unsafe { find_reg_addr(&node) }) else {
+        return false;
+    };
+
+    let Some(Ok(clock)) = node
+        .props()
+        .find(|node| node.name().map(|n| n == "clock-frequency"))
+        .ok()
+        .flatten()
+        .map(|prop| prop.u32(0))
+    else {
+        return false;
+    };
+    println!("Found Ns16550a compatible device at address {base:#010x}");
+    *uart::CONS.lock() = uart::DebugIo::Ns16550a(unsafe { Ns16550a::new(base, clock) });
+
+    true
+}
+
 extern "C" fn kmain(hartid: usize, fdt: *const u8, sp: usize) -> ! {
+    let dt = unsafe { DevTree::from_raw_pointer(fdt).unwrap() };
+    if !unsafe { init_uart(&dt) } {
+        println!("No Ns16550a node found in the device tree. Defaulting to SBI for I/O.");
+    }
+
     println!(
         "\n\nHello world from kernel hart {hartid}!\n_kernel_end: {:?}\nsp: {sp:#x}\nKSTACK: {:?}\nfdt: {:?}",
         unsafe { addr_of!(_kernel_end) },
@@ -135,24 +130,23 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8, sp: usize) -> ! {
         fdt
     );
 
-    // static mut BUFFER: [u8; 0x4000] = [0; 0x4000];
-    let dt = unsafe { DevTree::from_raw_pointer(fdt) }.unwrap();
-    // dump_fdt::dump_tree(dt, unsafe { &mut BUFFER[..] }).unwrap();
-    println!("Loaded device tree");
-
-    // println!("\n----");
-    // loop {
-    //     if let Some(ch) = SbiConsole::read() {
-    //         println!("{ch:#02x}");
-    //     }
-    // }
-
-    let syscon = &unsafe { locate_syscon(&dt) };
+    let syscon = &unsafe { init_syscon(&dt) };
     if let Some(syscon) = syscon {
-        println!("Syscon compatible device found at {:?}", syscon.base);
+        println!("Syscon compatible device found at {:?}", syscon.base());
     } else {
         println!("No syscon compatible device found. Shutdown will spin.");
     }
+
+    // static mut BUFFER: [u8; 0x4000] = [0; 0x4000];
+    // dump_fdt::dump_tree(dt, unsafe { &mut BUFFER[..] }).unwrap();
+
+    // println!("\n----");
+    // loop {
+    //     let Some(ch) = uart::CONS.lock().read_sync() else {
+    //         continue;
+    //     };
+    //     println!("{ch:#02x}");
+    // }
 
     let mut cmd = ArrayString::<256>::new();
     let mut buf = ArrayVec::<u8, 4>::new();
@@ -176,7 +170,7 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8, sp: usize) -> ! {
     print!("\n>> ");
     loop {
         let ch = loop {
-            if let Some(b) = SbiConsole::read() {
+            if let Some(b) = uart::CONS.lock().read() {
                 break b;
             }
         };

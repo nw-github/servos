@@ -67,3 +67,12 @@ pub fn r_tp() -> usize {
 pub fn sfence_vma() {
     unsafe { core::arch::asm!("sfence.vma zero, zero") };
 }
+
+#[inline(always)]
+pub fn halt() -> ! {
+    loop {
+        unsafe {
+            core::arch::asm!("wfi");
+        }
+    }
+}

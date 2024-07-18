@@ -1,6 +1,31 @@
-use servos::{lock::SpinLocked, sbi};
+use core::fmt::Write;
 
-pub static CONS: SpinLocked<SbiConsole> = SpinLocked::new(SbiConsole);
+use servos::{drivers::Ns16550a, lock::SpinLocked, sbi};
+
+pub enum DebugIo {
+    Sbi(SbiConsole),
+    Ns16550a(Ns16550a),
+}
+
+impl DebugIo {
+    pub fn read(&mut self) -> Option<u8> {
+        match self {
+            DebugIo::Sbi(_) => SbiConsole::read(),
+            DebugIo::Ns16550a(c) => c.read(),
+        }
+    }
+}
+
+impl Write for DebugIo {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        match self {
+            DebugIo::Sbi(c) => c.write_str(s),
+            DebugIo::Ns16550a(c) => c.write_str(s),
+        }
+    }
+}
+
+pub static CONS: SpinLocked<DebugIo> = SpinLocked::new(DebugIo::Sbi(SbiConsole));
 
 #[macro_export]
 macro_rules! print {
