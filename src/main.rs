@@ -24,12 +24,14 @@ mod uart;
 #[repr(C, align(16))]
 pub struct Align16<T>(pub T);
 
-static mut KSTACK: Align16<MaybeUninit<[[u8; HART_STACK_LEN]; MAX_CPUS + 1]>> =
-    Align16(MaybeUninit::uninit());
+static mut KSTACK: Align16<MaybeUninit<[u8; HART_STACK_LEN]>> = Align16(MaybeUninit::uninit());
+
+#[global_allocator]
+static ALLOCATOR: SpinLocked<BlockAlloc> = SpinLocked::new(BlockAlloc::new());
 
 #[panic_handler]
 fn on_panic(info: &core::panic::PanicInfo) -> ! {
-    println!("panic: {}", info);
+    println!("panic: {info}");
     halt()
 }
 
@@ -48,7 +50,6 @@ extern "C" fn _start() -> ! {
             mv      tp, a0
             la      sp, {stack}
             li      t0, {stack_len}
-            add     t0, t0, t0
             add     sp, sp, t0
             mv      a2, sp
             tail    {init}",
