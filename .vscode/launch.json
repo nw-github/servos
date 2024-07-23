@@ -20,7 +20,7 @@
             "target": ":1234",
             "remote": true,
             "cwd": "${workspaceRoot}/src",
-            "gdbpath": "/usr/bin/riscv64-elf-gdb",
+            "gdbpath": "/usr/bin/rust-gdb",
             "valuesFormatting": "parseText",
             "executable": "${workspaceFolder}/target/riscv64imac-unknown-none-elf/debug/servos"
         }

@@ -45,6 +45,10 @@ impl<T> SpinLocked<T> {
     unsafe fn unlock(&self) {
         self.locked.store(false, Ordering::Release)
     }
+
+    pub const fn as_ptr(&self) -> *mut T {
+        self.data.get()
+    }
 }
 
 pub struct Guard<'a, T> {

@@ -4,22 +4,30 @@
 #![feature(asm_const)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use core::{mem::MaybeUninit, ptr::addr_of};
+use core::{
+    mem::MaybeUninit,
+    ptr::{addr_of, addr_of_mut},
+};
 
+use alloc::vec;
 use arrayvec::{ArrayString, ArrayVec};
-use config::{HART_STACK_LEN, MAX_CPUS};
+use config::HART_STACK_LEN;
 use fdt_rs::{
     base::{DevTree, DevTreeNode},
     prelude::{FallibleIterator, PropReader},
 };
 use servos::{
     drivers::{Ns16550a, Syscon},
-    riscv::halt,
+    heap::BlockAlloc,
+    lock::SpinLocked,
+    riscv::{self, halt},
 };
 
 mod config;
 mod dump_fdt;
 mod uart;
+
+extern crate alloc;
 
 #[repr(C, align(16))]
 pub struct Align16<T>(pub T);
@@ -63,7 +71,7 @@ extern "C" fn _start() -> ! {
 }
 
 extern "C" {
-    static _kernel_end: u8;
+    static mut _kernel_end: u8;
 }
 
 unsafe fn find_reg_addr(node: &DevTreeNode) -> Option<usize> {
@@ -105,7 +113,7 @@ unsafe fn init_uart(dt: &DevTree) -> bool {
 
     let Some(Ok(clock)) = node
         .props()
-        .find(|node| node.name().map(|n| n == "clock-frequency"))
+        .find(|prop| Ok(prop.name()? == "clock-frequency"))
         .ok()
         .flatten()
         .map(|prop| prop.u32(0))
@@ -118,30 +126,47 @@ unsafe fn init_uart(dt: &DevTree) -> bool {
     true
 }
 
-extern "C" fn kmain(hartid: usize, fdt: *const u8, sp: usize) -> ! {
-    let dt = unsafe { DevTree::from_raw_pointer(fdt).unwrap() };
-    if !unsafe { init_uart(&dt) } {
-        println!("No Ns16550a node found in the device tree. Defaulting to SBI for I/O.");
+unsafe fn init_heap(dt: &DevTree) -> bool {
+    let Ok(Some((addr, size))) = dt.nodes().find_map(|node| {
+        let Some(dev) = node
+            .props()
+            .find(|prop| Ok(prop.name()? == "device_type"))?
+        else {
+            return Ok(None);
+        };
+        if dev.str() != Ok("memory") {
+            return Ok(None);
+        }
+
+        let Some(reg) = node.props().find(|prop| Ok(prop.name()? == "reg"))? else {
+            return Ok(None);
+        };
+
+        Ok(Some((reg.u64(0)?, reg.u64(1)?)))
+    }) else {
+        return false;
+    };
+
+    unsafe {
+        let kend = addr_of_mut!(_kernel_end);
+        let size = size as usize - (kend as usize - addr as usize);
+        let heap = core::slice::from_raw_parts_mut(kend as *mut MaybeUninit<u8>, size);
+        println!("Initializing heap:");
+        println!("    RAM starts at {:?}", addr as *const u8);
+        println!("    Kernel ends at {kend:?}");
+        println!(
+            "    Heap size: {size:#x} bytes ({} MiB), range [{:?}, {:?})",
+            (size >> 20),
+            heap.as_ptr(),
+            heap.as_ptr_range().end,
+        );
+
+        ALLOCATOR.lock().init(heap);
+        true
     }
+}
 
-    println!(
-        "\n\nHello world from kernel hart {hartid}!\n_kernel_end: {:?}\nsp: {sp:#x}\nKSTACK: {:?}\nfdt: {:?}",
-        unsafe { addr_of!(_kernel_end) },
-        unsafe { addr_of!(KSTACK) },
-        fdt
-    );
-
-    let syscon = &unsafe { init_syscon(&dt) };
-    if let Some(syscon) = syscon {
-        println!("Syscon compatible device found at {:?}", syscon.base());
-    } else {
-        println!("No syscon compatible device found. Shutdown will spin.");
-    }
-
-    // static mut BUFFER: [u8; 0x4000] = [0; 0x4000];
-    // dump_fdt::dump_tree(dt, unsafe { &mut BUFFER[..] }).unwrap();
-
-    // println!("\n----");
+fn console(syscon: Option<&Syscon>) -> ! {
     // loop {
     //     let Some(ch) = uart::CONS.lock().read_sync() else {
     //         continue;
@@ -214,5 +239,46 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8, sp: usize) -> ! {
             }
             _ => {}
         }
+    }
+}
+
+extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
+    unsafe {
+        let dt = DevTree::from_raw_pointer(fdt).unwrap();
+        if !init_uart(&dt) {
+            println!("No Ns16550a node found in the device tree. Defaulting to SBI for I/O.");
+        }
+
+        println!(
+            "Boot hart: {hartid}. KSTACK: {:?} fdt: {fdt:?} satp: {:?}",
+            addr_of!(KSTACK),
+            riscv::r_satp() as *const u8,
+        );
+
+        if !init_heap(&dt) {
+            panic!("[FATAL] Cannot initialize heap, no memory found in the device tree.");
+        }
+
+        let syscon = init_syscon(&dt);
+        if let Some(syscon) = &syscon {
+            println!("Syscon compatible device found at {:?}", syscon.base());
+        } else {
+            println!("No syscon compatible device found. Shutdown will spin.");
+        }
+
+        // static mut BUFFER: [u8; 0x4000] = [0; 0x4000];
+        // dump_fdt::dump_tree(dt, &mut BUFFER[..] }).unwrap();
+
+        let mut vectors = vec![];
+        for _ in 0..5 {
+            let mut test = vec![1, 2, 3, 4];
+            if test[0] == 1 {
+                test.push(5);
+            }
+            println!("{:?}: {test:?}", test.as_ptr());
+            vectors.push(test);
+        }
+
+        console(syscon.as_ref())
     }
 }

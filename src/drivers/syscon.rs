@@ -1,5 +1,3 @@
-use crate::riscv::halt;
-
 pub struct Syscon {
     base: *mut u32,
     shutdown_magic: u32,
@@ -22,12 +20,12 @@ impl Syscon {
 
     pub fn shutdown(&self) -> ! {
         unsafe { self.base.write_volatile(self.shutdown_magic) };
-        halt()
+        panic!("return after writing to syscon register");
     }
 
     pub fn restart(&self) -> ! {
         unsafe { self.base.write_volatile(self.restart_magic) };
-        halt()
+        panic!("return after writing to syscon register");
     }
 
     pub fn base(&self) -> *mut u32 {
