@@ -1,16 +1,10 @@
-pub const MSTATUS_MPP_MASK: usize = 3 << 11; // previous mode.
-pub const MSTATUS_MPP_M: usize = 3 << 11;
-pub const MSTATUS_MPP_S: usize = 1 << 11;
-pub const MSTATUS_MPP_U: usize = 0 << 11;
-pub const MSTATUS_MIE: usize = 1 << 3; // machine-mode interrupt enable.
+use core::marker::PhantomData;
 
 pub const SIE_SEIE: usize = 1 << 9; // external
 pub const SIE_STIE: usize = 1 << 5; // timer
 pub const SIE_SSIE: usize = 1 << 1; // software
 
-pub const MIE_MEIE: usize = 1 << 11; // external
-pub const MIE_MTIE: usize = 1 << 7; // timer
-pub const MIE_MSIE: usize = 1 << 3; // software
+pub const SSTATUS_SIE: usize = 1 << 1;
 
 macro_rules! read_register {
     ($name: ident) => {
@@ -39,21 +33,16 @@ macro_rules! status_reg_fns {
     };
 }
 
-status_reg_fns!(mstatus);
 status_reg_fns!(satp);
-status_reg_fns!(mscratch);
-status_reg_fns!(mtvec);
-status_reg_fns!(mepc);
-status_reg_fns!(medeleg);
-status_reg_fns!(mideleg);
-status_reg_fns!(mie);
 status_reg_fns!(sie);
+status_reg_fns!(stvec);
+status_reg_fns!(sstatus);
+status_reg_fns!(sip);
 status_reg_fns!(pmpaddr0);
 status_reg_fns!(pmpcfg0);
 read_register!(scause);
 read_register!(stval);
 read_register!(time);
-read_register!(mhartid);
 
 #[must_use]
 #[inline(always)]
@@ -75,4 +64,46 @@ pub fn halt() -> ! {
             core::arch::asm!("wfi");
         }
     }
+}
+
+pub struct InterruptToken {
+    enabled: bool,
+    _not_send_sync: PhantomData<*mut ()>,
+}
+
+impl InterruptToken {
+    pub fn forget(self) {
+        core::mem::forget(self);
+    }
+}
+
+impl Drop for InterruptToken {
+    fn drop(&mut self) {
+        if self.enabled {
+            unsafe { enable_intr() };
+        }
+    }
+}
+
+#[must_use]
+#[inline(always)]
+pub fn disable_intr() -> InterruptToken {
+    let token = InterruptToken {
+        enabled: r_sstatus() & SSTATUS_SIE != 0,
+        _not_send_sync: PhantomData,
+    };
+    unsafe { core::arch::asm!("csrc sstatus, {sie}", sie = const SSTATUS_SIE) };
+    token
+}
+
+/// Enables interrupts in the current core.
+///
+/// # Safety
+///
+/// This function isn't directly unsafe, but could lead to deadlocks or unsafety if interrupts are
+/// enabled during a period they shouldn't be. Generally, this shouldn't be needed due to the drop
+/// impl on InterruptToken.
+#[inline(always)]
+pub unsafe fn enable_intr() {
+    unsafe { core::arch::asm!("csrs sstatus, {sie}", sie = const SSTATUS_SIE) };
 }

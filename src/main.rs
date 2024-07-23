@@ -2,6 +2,9 @@
 #![no_main]
 #![feature(naked_functions)]
 #![feature(asm_const)]
+#![feature(abi_riscv_interrupt)]
+#![feature(fn_align)]
+
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use core::{
@@ -26,6 +29,7 @@ use servos::{
 mod config;
 mod dump_fdt;
 mod uart;
+mod trap;
 
 extern crate alloc;
 
@@ -269,15 +273,7 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
         // static mut BUFFER: [u8; 0x4000] = [0; 0x4000];
         // dump_fdt::dump_tree(dt, &mut BUFFER[..] }).unwrap();
 
-        let mut vectors = vec![];
-        for _ in 0..5 {
-            let mut test = vec![1, 2, 3, 4];
-            if test[0] == 1 {
-                test.push(5);
-            }
-            println!("{:?}: {test:?}", test.as_ptr());
-            vectors.push(test);
-        }
+        trap::install();
 
         console(syscon.as_ref())
     }

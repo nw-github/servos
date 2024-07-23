@@ -1,9 +1,10 @@
 use core::{
     cell::UnsafeCell,
-    marker::PhantomData,
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicBool, Ordering},
 };
+
+use crate::riscv::{disable_intr, InterruptToken};
 
 pub struct SpinLocked<T> {
     data: UnsafeCell<T>,
@@ -21,7 +22,7 @@ impl<T> SpinLocked<T> {
     }
 
     pub fn lock(&self) -> Guard<T> {
-        // TODO: disable interrupts
+        let token = disable_intr();
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -32,14 +33,15 @@ impl<T> SpinLocked<T> {
             }
         }
 
-        Guard::new(self)
+        Guard::new(token, self)
     }
 
     pub fn try_lock(&self) -> Option<Guard<T>> {
+        let token = disable_intr();
         self.locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .ok()
-            .map(|_| Guard::new(self))
+            .map(|_| Guard::new(token, self))
     }
 
     unsafe fn unlock(&self) {
@@ -53,15 +55,16 @@ impl<T> SpinLocked<T> {
 
 pub struct Guard<'a, T> {
     lock: &'a SpinLocked<T>,
-    _no_sync: PhantomData<*mut ()>,
+    token: InterruptToken,
 }
 
 impl<'a, T> Guard<'a, T> {
-    pub fn new(lock: &'a SpinLocked<T>) -> Self {
-        Self {
-            lock,
-            _no_sync: PhantomData,
-        }
+    pub fn new(token: InterruptToken, lock: &'a SpinLocked<T>) -> Self {
+        Self { lock, token }
+    }
+
+    pub fn interrupt_token<'g>(this: &'g Guard<'a, T>) -> &'g InterruptToken {
+        &this.token
     }
 }
 
