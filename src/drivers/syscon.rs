@@ -28,7 +28,7 @@ impl Syscon {
         panic!("return after writing to syscon register");
     }
 
-    pub fn base(&self) -> *mut u32 {
+    pub fn addr(&self) -> *mut u32 {
         self.base
     }
 }

@@ -13,20 +13,26 @@ PHDRS {
 
 SECTIONS {
   . = ORIGIN(ram);
+  PROVIDE(_text_start = .);
 
   .text : {                     # put code first
     *(.text.init)
     *(.text .text.*)            # then put anything else in .text
+    PROVIDE(_text_end = .);
   } >ram
 
   PROVIDE(_global_pointer = .); # this is magic, google "linker relaxation"
 
   .rodata : {                   # next, read-only data
+    PROVIDE(_rodata_start = .);
     *(.rodata .rodata.*)
+    PROVIDE(_rodata_end = .);
   } >ram
 
   .data : {                     # and the data section
+    PROVIDE(_data_start = .);
     *(.sdata .sdata.*) *(.data .data.*)
+    PROVIDE(_data_end = .);
   } >ram
 
   .bss :{                       # finally, the BSS

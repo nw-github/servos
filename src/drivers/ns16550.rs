@@ -79,6 +79,10 @@ impl Ns16550a {
         }
     }
 
+    pub fn addr(&self) -> NonNull<u8> {
+        self.base
+    }
+
     #[inline(always)]
     fn read_reg(&self, reg: Read) -> u8 {
         unsafe { self.base.offset(reg as isize).read_volatile() }

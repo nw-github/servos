@@ -25,6 +25,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "either"
+version = "1.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60b1af1c220855b6ceac025d3f6ecdd2b7c4894bfe9cd9bda4fbb4bc7c0d4cf0"
+
+[[package]]
 name = "endian-type-rs"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -163,6 +169,7 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "concat-idents",
+ "either",
  "fdt-rs",
  "linked_list_allocator",
  "lock_api",

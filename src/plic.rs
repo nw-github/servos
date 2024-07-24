@@ -61,6 +61,10 @@ impl Plic {
         }
     }
 
+    pub fn addr(&self) -> *mut u8 {
+        unsafe { *self.0.get() }
+    }
+
     fn hart_complete(&self, irq: u32) {
         unsafe { *self.u32(COMPLETION_BASE + Self::s_ctx_offset(0x1000)) = irq };
     }

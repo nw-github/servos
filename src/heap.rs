@@ -1,5 +1,8 @@
 use core::{
-    alloc::{GlobalAlloc, Layout}, mem::MaybeUninit, ptr::NonNull
+    alloc::{GlobalAlloc, Layout},
+    mem::MaybeUninit,
+    ops::Range,
+    ptr::NonNull,
 };
 
 use linked_list_allocator::Heap;
@@ -55,6 +58,13 @@ impl BlockAlloc {
         }
     }
 
+    pub fn range(&self) -> Range<*mut u8> {
+        Range {
+            start: self.fallback.bottom(),
+            end: self.fallback.top(),
+        }
+    }
+
     fn list_index(layout: &Layout) -> Option<usize> {
         let min = layout.size().max(layout.align());
         BLOCK_SIZES.iter().position(|&s| s >= min)
@@ -78,7 +88,9 @@ struct Node {
     next: Option<&'static mut Node>,
 }
 
-const BLOCK_SIZES: &[usize] = &[0x8, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x400, 0x800];
+const BLOCK_SIZES: &[usize] = &[
+    0x8, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x400, 0x800, 0x1000,
+];
 
 unsafe impl GlobalAlloc for SpinLocked<BlockAlloc> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {

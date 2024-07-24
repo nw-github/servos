@@ -4,10 +4,14 @@
 #![feature(asm_const)]
 #![feature(abi_riscv_interrupt)]
 #![feature(fn_align)]
+#![feature(allocator_api)]
+#![feature(new_uninit)]
+#![feature(ptr_sub_ptr)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use core::{
     mem::MaybeUninit,
+    ops::Range,
     ptr::{addr_of, addr_of_mut},
 };
 
@@ -23,14 +27,17 @@ use servos::{
     drivers::{Ns16550a, Syscon},
     heap::BlockAlloc,
     lock::SpinLocked,
-    riscv::{self, halt},
+    riscv::{self, halt, r_satp, sfence_vma, w_satp},
 };
+use uart::{DebugIo, CONS};
+use vmm::{PageTable, PTE_R, PTE_W, PTE_X, SATP_MODE_SV39};
 
 mod config;
 mod dump_fdt;
 mod plic;
 mod trap;
 mod uart;
+mod vmm;
 
 extern crate alloc;
 
@@ -41,6 +48,22 @@ static mut KSTACK: Align16<MaybeUninit<[u8; HART_STACK_LEN]>> = Align16(MaybeUni
 
 #[global_allocator]
 static ALLOCATOR: SpinLocked<BlockAlloc> = SpinLocked::new(BlockAlloc::new());
+
+static mut KPAGETABLE: PageTable = PageTable::new();
+
+extern "C" {
+    static _text_start: u8;
+    static _rodata_start: u8;
+    static _data_start: u8;
+    static _bss_start: u8;
+
+    static _text_end: u8;
+    static _rodata_end: u8;
+    static _data_end: u8;
+    static _bss_end: u8;
+
+    static mut _kernel_end: u8;
+}
 
 #[panic_handler]
 fn on_panic(info: &core::panic::PanicInfo) -> ! {
@@ -73,10 +96,6 @@ extern "C" fn _start() -> ! {
             options(noreturn),
         );
     }
-}
-
-extern "C" {
-    static mut _kernel_end: u8;
 }
 
 unsafe fn find_reg_addr(node: &DevTreeNode) -> Option<usize> {
@@ -112,10 +131,7 @@ unsafe fn init_uart(dt: &DevTree) -> Option<u32> {
         return None;
     };
 
-    let Some(base) = (unsafe { find_reg_addr(&node) }) else {
-        return None;
-    };
-
+    let base = (unsafe { find_reg_addr(&node) })?;
     let Some(Ok(clock)) = node
         .props()
         .find(|prop| Ok(prop.name()? == "clock-frequency"))
@@ -142,7 +158,7 @@ unsafe fn init_uart(dt: &DevTree) -> Option<u32> {
     Some(plic_irq)
 }
 
-unsafe fn init_heap(dt: &DevTree) -> bool {
+unsafe fn init_heap(dt: &DevTree) {
     let Ok(Some((addr, size))) = dt.nodes().find_map(|node| {
         let Some(dev) = node
             .props()
@@ -160,11 +176,12 @@ unsafe fn init_heap(dt: &DevTree) -> bool {
 
         Ok(Some((reg.u64(0)?, reg.u64(1)?)))
     }) else {
-        return false;
+        panic!("[FATAL] Cannot initialize heap, no memory found in the device tree.");
     };
 
     unsafe {
         let kend = addr_of_mut!(_kernel_end);
+        let kend = kend.add(kend.align_offset(0x1000)); // align to next page
         let size = size as usize - (kend as usize - addr as usize);
         let heap = core::slice::from_raw_parts_mut(kend as *mut MaybeUninit<u8>, size);
         println!("Initializing heap:");
@@ -178,7 +195,6 @@ unsafe fn init_heap(dt: &DevTree) -> bool {
         );
 
         ALLOCATOR.lock().init(heap);
-        true
     }
 }
 
@@ -197,6 +213,42 @@ unsafe fn init_plic(dt: &DevTree) -> bool {
     }
 
     true
+}
+
+unsafe fn init_vmem(syscon: Option<&Syscon>) {
+    unsafe {
+        let pt = &mut *addr_of_mut!(KPAGETABLE);
+        assert!(pt.map_identity(
+            addr_of!(_text_start).into(),
+            addr_of!(_text_end).sub_ptr(addr_of!(_text_start)),
+            PTE_R | PTE_X
+        ));
+        assert!(pt.map_identity(
+            addr_of!(_rodata_start).into(),
+            addr_of!(_rodata_end).sub_ptr(addr_of!(_rodata_end)),
+            PTE_R
+        ));
+        assert!(pt.map_identity(
+            addr_of!(_data_start).into(),
+            addr_of!(_bss_end).sub_ptr(addr_of!(_data_start)),
+            PTE_R | PTE_W
+        ));
+
+        let Range { start, end } = ALLOCATOR.lock().range();
+        assert!(pt.map_identity(start.into(), end.sub_ptr(start), PTE_R | PTE_W));
+
+        assert!(pt.map_identity(PLIC.addr().into(), 0x1000, PTE_R | PTE_W));
+        if let DebugIo::Ns16550a(uart) = &*CONS.lock() {
+            assert!(pt.map_identity(uart.addr().into(), 0x1000, PTE_R | PTE_W));
+        }
+        if let Some(syscon) = syscon {
+            assert!(pt.map_identity(syscon.addr().into(), 0x1000, PTE_R | PTE_W));
+        }
+
+        sfence_vma();
+        w_satp(SATP_MODE_SV39 as usize | (addr_of!(KPAGETABLE) as usize >> 12));
+        sfence_vma();
+    }
 }
 
 fn console(syscon: Option<&Syscon>) -> ! {
@@ -293,18 +345,21 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
             riscv::r_satp() as *const u8,
         );
 
-        if !init_heap(&dt) {
-            panic!("[FATAL] Cannot initialize heap, no memory found in the device tree.");
-        }
-
+        init_heap(&dt);
         let syscon = init_syscon(&dt);
         if let Some(syscon) = &syscon {
-            println!("Syscon compatible device found at {:?}", syscon.base());
+            println!("Syscon compatible device found at {:?}", syscon.addr());
         } else {
             println!("No syscon compatible device found. Shutdown will spin.");
         }
 
-        // static mut BUFFER: [u8; 0x4000] = [0; 0x4000];
+        init_vmem(syscon.as_ref());
+        println!(
+            "Initialized kernel page table, satp: {:?}",
+            r_satp() as *const u8
+        );
+
+        // let mut buffer = vec![0; 0x4000];
         // dump_fdt::dump_tree(dt, &mut BUFFER[..] }).unwrap();
 
         PLIC.set_hart_priority_threshold(0);
