@@ -208,12 +208,6 @@ fn console(syscon: Option<&Syscon>) -> ! {
         // }
         loop {}
     }
-    // loop {
-    //     let Some(ch) = uart::CONS.lock().read_sync() else {
-    //         continue;
-    //     };
-    //     println!("{ch:#02x}");
-    // }
 
     let mut cmd = ArrayString::<256>::new();
     let mut buf = ArrayVec::<u8, 4>::new();
@@ -320,7 +314,7 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
             PLIC.hart_enable(uart_plic_irq);
         }
 
-        trap::install();
+        trap::install(uart_plic_irq);
 
         console(syscon.as_ref())
     }

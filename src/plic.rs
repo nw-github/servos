@@ -1,18 +1,17 @@
-use core::cell::UnsafeCell;
-
-use crate::riscv::r_tp;
+use core::{cell::UnsafeCell, num::NonZeroU32};
 
 pub struct Plic(UnsafeCell<*mut u8>);
 
 unsafe impl Sync for Plic {}
 
+#[link_section = ".data"]
 pub static PLIC: Plic = Plic::new();
 
-const PRIORITY_BASE: usize   = 0;
+const PRIORITY_BASE: usize = 0;
 // const PENDING_BASE: usize    = 0x001000;
-const ENABLE_BASE: usize     = 0x002000 + 0x80;
-const THRESHOLDS_BASE: usize = 0x200000 + 0x1000;
-const CLAIM_BASE: usize      = 0x200000 + 0x1000 + 4;
+const ENABLE_BASE: usize = 0x002000;
+const THRESHOLDS_BASE: usize = 0x200000;
+const CLAIM_BASE: usize = 0x200000 + 4;
 const COMPLETION_BASE: usize = CLAIM_BASE;
 
 impl Plic {
@@ -42,25 +41,28 @@ impl Plic {
     pub fn hart_enable(&self, src: u32) {
         debug_assert!((1..1024).contains(&src), "src is {src}");
         unsafe {
-            *self.u32(ENABLE_BASE + (src as usize / 32) * 4 + r_tp() * 0x80) = 1 << (src % 32);
+            *self.u32(ENABLE_BASE + (src as usize / 32) * 4 + Self::s_ctx_offset(0x80)) =
+                1 << (src % 32);
         }
     }
 
     pub fn set_hart_priority_threshold(&self, priority: u32) {
         unsafe {
-            *self.u32(THRESHOLDS_BASE + r_tp() * 0x1000) = priority;
+            *self.u32(THRESHOLDS_BASE + Self::s_ctx_offset(0x1000)) = priority;
         }
     }
 
     #[must_use]
     pub fn hart_claim(&self) -> Irq {
-        unsafe { Irq(*self.u32(CLAIM_BASE + r_tp() * 0x1000)) }
+        unsafe {
+            Irq(NonZeroU32::new(
+                *self.u32(CLAIM_BASE + Self::s_ctx_offset(0x1000)),
+            ))
+        }
     }
 
     fn hart_complete(&self, irq: u32) {
-        unsafe {
-            *self.u32(COMPLETION_BASE + r_tp() * 0x1000) = irq;
-        }
+        unsafe { *self.u32(COMPLETION_BASE + Self::s_ctx_offset(0x1000)) = irq };
     }
 
     fn u32(&self, byte_offset: usize) -> *mut u32 {
@@ -70,14 +72,26 @@ impl Plic {
         assert!(!ptr.is_null());
         unsafe { ptr.add(byte_offset).cast() }
     }
+
+    #[inline(always)]
+    fn s_ctx_offset(offset: usize) -> usize {
+        // Even contexts are M-mode
+        offset + crate::riscv::r_tp() * offset * 2
+    }
 }
 
-pub struct Irq(pub u32);
+pub struct Irq(Option<NonZeroU32>);
+
+impl Irq {
+    pub fn value(&self) -> Option<&NonZeroU32> {
+        self.0.as_ref()
+    }
+}
 
 impl Drop for Irq {
     fn drop(&mut self) {
-        if self.0 != 0 {
-            PLIC.hart_complete(self.0);
+        if let Some(v) = self.0 {
+            PLIC.hart_complete(v.into());
         }
     }
 }

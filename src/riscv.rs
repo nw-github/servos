@@ -96,7 +96,7 @@ pub fn disable_intr() -> InterruptToken {
     token
 }
 
-/// Enables interrupts in the current core.
+/// Enables interrupts on the current hart.
 ///
 /// # Safety
 ///
