@@ -4,7 +4,6 @@
 #![feature(asm_const)]
 #![feature(abi_riscv_interrupt)]
 #![feature(fn_align)]
-
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use core::{
@@ -19,6 +18,7 @@ use fdt_rs::{
     base::{DevTree, DevTreeNode},
     prelude::{FallibleIterator, PropReader},
 };
+use plic::PLIC;
 use servos::{
     drivers::{Ns16550a, Syscon},
     heap::BlockAlloc,
@@ -28,8 +28,9 @@ use servos::{
 
 mod config;
 mod dump_fdt;
-mod uart;
+mod plic;
 mod trap;
+mod uart;
 
 extern crate alloc;
 
@@ -106,13 +107,13 @@ unsafe fn init_syscon(dt: &DevTree) -> Option<Syscon> {
     }
 }
 
-unsafe fn init_uart(dt: &DevTree) -> bool {
+unsafe fn init_uart(dt: &DevTree) -> Option<u32> {
     let Ok(Some(node)) = dt.compatible_nodes("ns16550a").next() else {
-        return false;
+        return None;
     };
 
     let Some(base) = (unsafe { find_reg_addr(&node) }) else {
-        return false;
+        return None;
     };
 
     let Some(Ok(clock)) = node
@@ -122,12 +123,23 @@ unsafe fn init_uart(dt: &DevTree) -> bool {
         .flatten()
         .map(|prop| prop.u32(0))
     else {
-        return false;
+        return None;
     };
+
+    let Some(Ok(plic_irq)) = node
+        .props()
+        .find(|prop| Ok(prop.name()? == "interrupts"))
+        .ok()
+        .flatten()
+        .map(|prop| prop.u32(0))
+    else {
+        return None;
+    };
+
     println!("Found Ns16550a compatible device at address {base:#010x}");
     *uart::CONS.lock() = uart::DebugIo::Ns16550a(unsafe { Ns16550a::new(base, clock) });
 
-    true
+    Some(plic_irq)
 }
 
 unsafe fn init_heap(dt: &DevTree) -> bool {
@@ -170,7 +182,32 @@ unsafe fn init_heap(dt: &DevTree) -> bool {
     }
 }
 
+unsafe fn init_plic(dt: &DevTree) -> bool {
+    let Ok(Some(node)) = dt.compatible_nodes("riscv,plic0").next() else {
+        return false;
+    };
+
+    let Some(base) = (unsafe { find_reg_addr(&node) }) else {
+        return false;
+    };
+
+    println!("PLIC found at address {:?}", base as *mut u8);
+    unsafe {
+        PLIC.init(base as *mut _);
+    }
+
+    true
+}
+
 fn console(syscon: Option<&Syscon>) -> ! {
+    fn getchar() -> u8 {
+        // loop {
+        //     if let Some(b) = uart::CONS.lock().read() {
+        //         break b;
+        //     }
+        // }
+        loop {}
+    }
     // loop {
     //     let Some(ch) = uart::CONS.lock().read_sync() else {
     //         continue;
@@ -199,11 +236,7 @@ fn console(syscon: Option<&Syscon>) -> ! {
 
     print!("\n>> ");
     loop {
-        let ch = loop {
-            if let Some(b) = uart::CONS.lock().read() {
-                break b;
-            }
-        };
+        let ch = getchar();
         match ch {
             0x0d => {
                 process_cmd(&mut cmd);
@@ -248,9 +281,16 @@ fn console(syscon: Option<&Syscon>) -> ! {
 
 extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
     unsafe {
+        println!("\n\n");
+
         let dt = DevTree::from_raw_pointer(fdt).unwrap();
-        if !init_uart(&dt) {
+        let uart_plic_irq = init_uart(&dt);
+        if uart_plic_irq.is_none() {
             println!("No Ns16550a node found in the device tree. Defaulting to SBI for I/O.");
+        }
+
+        if !init_plic(&dt) {
+            panic!("No PLIC node found in the device tree.");
         }
 
         println!(
@@ -272,6 +312,13 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
 
         // static mut BUFFER: [u8; 0x4000] = [0; 0x4000];
         // dump_fdt::dump_tree(dt, &mut BUFFER[..] }).unwrap();
+
+        PLIC.set_hart_priority_threshold(0);
+        if let Some(uart_plic_irq) = uart_plic_irq {
+            println!("UART PLIC IRQ is {uart_plic_irq:#x}");
+            PLIC.set_priority(uart_plic_irq, 1);
+            PLIC.hart_enable(uart_plic_irq);
+        }
 
         trap::install();
 

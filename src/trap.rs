@@ -1,9 +1,12 @@
 use servos::{
-    riscv::{disable_intr, enable_intr, r_time, w_sie, w_stvec, SIE_SEIE, SIE_SSIE, SIE_STIE},
+    riscv::{
+        disable_intr, enable_intr, r_sip, r_time, w_sie, w_sip, w_stvec, SIE_SEIE, SIE_SSIE,
+        SIE_STIE,
+    },
     sbi,
 };
 
-use crate::{println, riscv::r_scause};
+use crate::{plic::PLIC, println, riscv::r_scause};
 
 const INTERRUPT_FLAG_BIT: usize = 1 << (usize::BITS - 1);
 
@@ -11,10 +14,10 @@ const INTERRUPT_FLAG_BIT: usize = 1 << (usize::BITS - 1);
 #[derive(strum::FromRepr, Debug)]
 #[allow(clippy::enum_clike_unportable_variant)]
 pub enum TrapCause {
-    Software = 1 | INTERRUPT_FLAG_BIT,
-    Timer = 5 | INTERRUPT_FLAG_BIT,
-    External = 9 | INTERRUPT_FLAG_BIT,
-    CounterOverflow = 13 | INTERRUPT_FLAG_BIT,
+    SoftwareIntr = 1 | INTERRUPT_FLAG_BIT,
+    TimerIntr = 5 | INTERRUPT_FLAG_BIT,
+    ExternalIntr = 9 | INTERRUPT_FLAG_BIT,
+    CounterOverflowIntr = 13 | INTERRUPT_FLAG_BIT,
 
     InstrAddrMisaligned = 0,
     InstrAccessFault,
@@ -35,16 +38,25 @@ pub enum TrapCause {
 
 #[repr(align(4))]
 extern "riscv-interrupt-s" fn handle_trap() {
-    let scause = r_scause();
     let _token = disable_intr();
-    match TrapCause::from_repr(scause) {
-        Some(TrapCause::Timer) => {
-            println!("Timer!");
+    let cause = r_scause() & (INTERRUPT_FLAG_BIT | 0xff);
+    match TrapCause::from_repr(cause) {
+        Some(TrapCause::ExternalIntr) => {
+            let irq = PLIC.hart_claim();
+            println!("PLIC interrupt: {}", irq.0);
+        }
+        Some(TrapCause::TimerIntr) => {
+            // println!("Timer!");
             _ = sbi::timer::set_timer(r_time() + 10_000_000);
         }
         Some(TrapCause::IllegalInstr) => panic!("Illegal instruction!"),
         Some(ex) => println!("[INFO] Unhandled trap: {ex:?}"),
         None => println!("[INFO] Unhandled trap: no match"),
+    }
+
+    let cause = cause & !INTERRUPT_FLAG_BIT;
+    if cause != 0 {
+        w_sip(r_sip() & !cause);
     }
 }
 
