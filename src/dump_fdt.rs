@@ -151,6 +151,7 @@ impl FdtDumper {
     }
 }
 
+#[allow(unused)]
 pub fn dump_tree(dt: DevTree<'_>, buf: &mut [u8]) -> DevTreeResult<()> {
     let layout = DevTreeIndex::get_layout(&dt)?;
     let index = DevTreeIndex::new(dt, &mut buf[..layout.size() + layout.align()])?;

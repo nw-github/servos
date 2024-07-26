@@ -1,23 +1,15 @@
-/*
-Sv39 Physical Address
-
-60 - 63 | Mode
-44 - 59 | Address Space ID (ASID)
- 0 - 43 | Physical Page Number (PPN)
-
-Sv39 Virtual Address
-
-30 - 38 | Virtual Page Number 2 (VPN)
-21 - 29 | VPN1
-12 - 20 | VPN0
- 0 - 11 | Page Offset
-
-*/
-
 use core::ptr::NonNull;
 
 use alloc::boxed::Box;
 use either::Either;
+
+/// SATP register
+///
+/// 60 - 63 | Mode
+///
+/// 44 - 59 | Address Space ID (ASID)
+///
+///  0 - 43 | Physical Page Number (PPN)
 
 pub const SATP_MODE_SV39: u64 = 8;
 
@@ -29,7 +21,9 @@ pub const PTE_U: u64 = 1 << 4;
 pub const PTE_G: u64 = 1 << 5;
 pub const PTE_A: u64 = 1 << 6;
 pub const PTE_D: u64 = 1 << 7;
-pub const PTE_RSW: u64 = (1 << 8) | (1 << 9);
+// pub const PTE_RSW: u64 = (1 << 8) | (1 << 9);
+
+pub const PGSIZE: usize = 0x1000;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Default)]
@@ -90,7 +84,7 @@ impl PageTableEntry {
     }
 }
 
-#[repr(align(0x1000))]
+#[repr(align(0x1000))] // PGSIZE
 pub struct PageTable([PageTableEntry; 512]);
 
 impl PageTable {
@@ -98,13 +92,15 @@ impl PageTable {
         PageTable([PageTableEntry(0); 512])
     }
 
+    /// Map the physical page containing `pa` to the virtual page `va` with permissions `perms`.
+    ///
+    /// Returns `false` if a required page table allocation fails when creating the mapping.
+    ///
+    /// # Panics
+    ///
+    /// If the virtual page is already mapped, or any pte except the final one is a leaf entry,
+    /// this function will panic.
     pub fn map(&mut self, va: VirtAddr, pa: PhysAddr, perms: u64) -> bool {
-        // crate::println!(
-        //     "   Mapping pa {:?} to va {:?}",
-        //     pa.0 as *const u8,
-        //     va.0 as *const u8,
-        // );
-
         let mut pt = self;
         for level in [2, 1] {
             let entry = &mut pt.0[va.vpn(level)];
@@ -130,14 +126,17 @@ impl PageTable {
         true
     }
 
+    /// Map all pages in the contiguous physical range `pa` to `pa + size` to the contiguous virtual
+    /// range `va` to `va + size`. `pa` and `va` needn't be page aligned.
     pub fn map_range(&mut self, mut va: VirtAddr, pa: PhysAddr, size: usize, perms: u64) -> bool {
         if size == 0 {
             return true;
         }
+        va.0 &= !(PGSIZE - 1);
 
-        va.0 &= !0xfff;
-        for page in (0..size + 0xfff).step_by(0x1000) {
-            if !self.map(VirtAddr(va.0 + page), PhysAddr(pa.0 + page), perms) {
+        let [first, last] = [pa.0 & !(PGSIZE - 1), (pa.0 + size - 1) & !(PGSIZE - 1)];
+        for (i, page) in (first..=last).step_by(PGSIZE).enumerate() {
+            if !self.map(VirtAddr(va.0 + i * PGSIZE), PhysAddr(page), perms) {
                 return false;
             }
         }
@@ -145,11 +144,9 @@ impl PageTable {
         true
     }
 
+    /// Identity map all pages in the contigous physical range `pa` to `pa + size`. Only intended
+    /// for use by the kernel.
     pub fn map_identity(&mut self, pa: PhysAddr, size: usize, perms: u64) -> bool {
-        crate::println!(
-            "Identity mapping region {:?} with size {size:#x}",
-            pa.0 as *const u8
-        );
         self.map_range(VirtAddr(pa.0), pa, size, perms)
     }
 }
@@ -164,6 +161,15 @@ impl Drop for PageTable {
     }
 }
 
+/// Sv39 Virtual Address
+///
+/// 30 - 38 | Virtual Page Number (VPN) 2
+///
+/// 21 - 29 | VPN1
+///
+/// 12 - 20 | VPN0
+///
+///  0 - 11 | Page Offset
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct VirtAddr(pub usize);

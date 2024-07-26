@@ -13,23 +13,25 @@ PHDRS {
 
 SECTIONS {
   . = ORIGIN(ram);
-  PROVIDE(_text_start = .);
+  PROVIDE(_text_start = .);     # ORIGIN is already page aligned
 
-  .text : {                     # put code first
-    *(.text.init)
-    *(.text .text.*)            # then put anything else in .text
+  .text : {
+    *(.text.init)               # ensure _start is loaded at ORIGIN
+    *(.text .text.*)
     PROVIDE(_text_end = .);
   } >ram
 
   PROVIDE(_global_pointer = .); # this is magic, google "linker relaxation"
 
-  .rodata : {                   # next, read-only data
+  .rodata : {
+    . = ALIGN(0x1000);          # page align RODATA for vm mapping
     PROVIDE(_rodata_start = .);
     *(.rodata .rodata.*)
     PROVIDE(_rodata_end = .);
   } >ram
 
-  .data : {                     # and the data section
+  .data : {
+    . = ALIGN(0x1000);          # page align DATA for vm mapping (bss & data are mapped together)
     PROVIDE(_data_start = .);
     *(.sdata .sdata.*) *(.data .data.*)
     PROVIDE(_data_end = .);

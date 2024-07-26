@@ -1,7 +1,7 @@
 use core::num::NonZeroU32;
 
 use servos::{
-    riscv::{enable_intr, r_sip, r_time, w_sie, w_sip, w_stvec, SIE_SEIE, SIE_SSIE, SIE_STIE},
+    riscv::{enable_intr, r_time, w_sie, w_stvec, SIE_SEIE, SIE_SSIE, SIE_STIE},
     sbi,
 };
 
@@ -67,18 +67,15 @@ extern "riscv-interrupt-s" fn handle_trap() {
         Some(ex) => println!("[INFO] Unhandled trap: {ex:?}"),
         None => println!("[INFO] Unhandled trap: no match"),
     }
-
-    let cause = cause & !INTERRUPT_FLAG_BIT;
-    if cause != 0 {
-        w_sip(r_sip() & !cause);
-    }
 }
 
-pub fn install(uart_irq: Option<u32>) {
+pub unsafe fn init_context(uart_irq: Option<u32>) {
     unsafe {
         TRAP_CONTEXT.uart_irq = uart_irq.and_then(NonZeroU32::new);
     }
+}
 
+pub fn hart_install() {
     w_stvec(handle_trap as usize);
     w_sie(SIE_SEIE | SIE_STIE | SIE_SSIE);
     unsafe { enable_intr() };

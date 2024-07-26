@@ -4,7 +4,6 @@ pub struct Plic(UnsafeCell<*mut u8>);
 
 unsafe impl Sync for Plic {}
 
-#[link_section = ".data"]
 pub static PLIC: Plic = Plic::new();
 
 const PRIORITY_BASE: usize = 0;

@@ -15,7 +15,6 @@ use core::{
     ptr::{addr_of, addr_of_mut},
 };
 
-use alloc::vec;
 use arrayvec::{ArrayString, ArrayVec};
 use config::HART_STACK_LEN;
 use fdt_rs::{
@@ -198,7 +197,7 @@ unsafe fn init_heap(dt: &DevTree) {
     }
 }
 
-unsafe fn init_plic(dt: &DevTree) -> bool {
+unsafe fn init_plic(dt: &DevTree, uart_plic_irq: Option<u32>) -> bool {
     let Ok(Some(node)) = dt.compatible_nodes("riscv,plic0").next() else {
         return false;
     };
@@ -210,6 +209,13 @@ unsafe fn init_plic(dt: &DevTree) -> bool {
     println!("PLIC found at address {:?}", base as *mut u8);
     unsafe {
         PLIC.init(base as *mut _);
+    }
+
+    if let Some(uart_plic_irq) = uart_plic_irq {
+        println!("UART PLIC IRQ is {uart_plic_irq:#x}");
+        unsafe {
+            PLIC.set_priority(uart_plic_irq, 1);
+        }
     }
 
     true
@@ -234,31 +240,49 @@ unsafe fn init_vmem(syscon: Option<&Syscon>) {
             PTE_R | PTE_W
         ));
 
+        // TODO: might be worth adding support for mega/gigapages to save some space on page tables
         let Range { start, end } = ALLOCATOR.lock().range();
         assert!(pt.map_identity(start.into(), end.sub_ptr(start), PTE_R | PTE_W));
 
         assert!(pt.map_identity(PLIC.addr().into(), 0x1000, PTE_R | PTE_W));
-        if let DebugIo::Ns16550a(uart) = &*CONS.lock() {
-            assert!(pt.map_identity(uart.addr().into(), 0x1000, PTE_R | PTE_W));
+        let uart_addr = match &*CONS.lock() {
+            DebugIo::Ns16550a(uart) => Some(uart.addr().into()),
+            DebugIo::Sbi(_) => None,
+        };
+        if let Some(uart_addr) = uart_addr {
+            assert!(pt.map_identity(uart_addr, 0x1000, PTE_R | PTE_W));
         }
         if let Some(syscon) = syscon {
             assert!(pt.map_identity(syscon.addr().into(), 0x1000, PTE_R | PTE_W));
         }
-
-        sfence_vma();
-        w_satp(SATP_MODE_SV39 as usize | (addr_of!(KPAGETABLE) as usize >> 12));
-        sfence_vma();
     }
+}
+
+unsafe fn init_hart(uart_plic_irq: Option<u32>) {
+    // enable virtual memory
+    sfence_vma();
+    unsafe {
+        w_satp(SATP_MODE_SV39 as usize | (addr_of!(KPAGETABLE) as usize >> 12));
+    }
+    sfence_vma();
+
+    // ask for PLIC interrupts
+    PLIC.set_hart_priority_threshold(0);
+    if let Some(uart_plic_irq) = uart_plic_irq {
+        PLIC.hart_enable(uart_plic_irq);
+    }
+
+    // enable traps and install the trap handler
+    trap::hart_install();
 }
 
 fn console(syscon: Option<&Syscon>) -> ! {
     fn getchar() -> u8 {
-        // loop {
-        //     if let Some(b) = uart::CONS.lock().read() {
-        //         break b;
-        //     }
-        // }
-        loop {}
+        loop {
+            if let Some(b) = uart::CONS.lock().read() {
+                break b;
+            }
+        }
     }
 
     let mut cmd = ArrayString::<256>::new();
@@ -329,23 +353,23 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
     unsafe {
         println!("\n\n");
 
-        let dt = DevTree::from_raw_pointer(fdt).unwrap();
+        let dt = DevTree::from_raw_pointer(fdt).expect("Couldn't parse device tree from a1");
         let uart_plic_irq = init_uart(&dt);
         if uart_plic_irq.is_none() {
             println!("No Ns16550a node found in the device tree. Defaulting to SBI for I/O.");
         }
 
-        if !init_plic(&dt) {
+        trap::init_context(uart_plic_irq);
+        if !init_plic(&dt, uart_plic_irq) {
             panic!("No PLIC node found in the device tree.");
         }
 
         println!(
             "Boot hart: {hartid}. KSTACK: {:?} fdt: {fdt:?} satp: {:?}",
             addr_of!(KSTACK),
-            riscv::r_satp() as *const u8,
+            r_satp() as *const u8,
         );
 
-        init_heap(&dt);
         let syscon = init_syscon(&dt);
         if let Some(syscon) = &syscon {
             println!("Syscon compatible device found at {:?}", syscon.addr());
@@ -353,24 +377,17 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
             println!("No syscon compatible device found. Shutdown will spin.");
         }
 
+        // note: the device tree lives somewhere in RAM outside the kernel area, it's potentially
+        // invalidated once we initialize the heap over it
+        init_heap(&dt);
         init_vmem(syscon.as_ref());
+        init_hart(uart_plic_irq);
         println!(
             "Initialized kernel page table, satp: {:?}",
             r_satp() as *const u8
         );
 
-        // let mut buffer = vec![0; 0x4000];
-        // dump_fdt::dump_tree(dt, &mut BUFFER[..] }).unwrap();
-
-        PLIC.set_hart_priority_threshold(0);
-        if let Some(uart_plic_irq) = uart_plic_irq {
-            println!("UART PLIC IRQ is {uart_plic_irq:#x}");
-            PLIC.set_priority(uart_plic_irq, 1);
-            PLIC.hart_enable(uart_plic_irq);
-        }
-
-        trap::install(uart_plic_irq);
-
-        console(syscon.as_ref())
+        halt()
+        // console(syscon.as_ref())
     }
 }
