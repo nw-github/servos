@@ -7,6 +7,7 @@
 #![feature(allocator_api)]
 #![feature(new_uninit)]
 #![feature(ptr_sub_ptr)]
+#![feature(try_with_capacity)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use core::{
@@ -22,26 +23,26 @@ use fdt_rs::{
     prelude::{FallibleIterator, PropReader},
 };
 use plic::PLIC;
+use proc::{Process, Reg};
 use servos::{
     drivers::{Ns16550a, Syscon},
     heap::BlockAlloc,
     lock::SpinLocked,
-    riscv::{self, halt, r_satp, sfence_vma, w_satp},
+    riscv::{self, disable_intr, halt, r_satp, sfence_vma, w_satp},
+    Align16,
 };
 use uart::{DebugIo, CONS};
-use vmm::{PageTable, PTE_R, PTE_W, PTE_X, SATP_MODE_SV39};
+use vmm::{PageTable, VirtAddr, PTE_R, PTE_W, PTE_X};
 
 mod config;
 mod dump_fdt;
 mod plic;
+mod proc;
 mod trap;
 mod uart;
 mod vmm;
 
 extern crate alloc;
-
-#[repr(C, align(16))]
-pub struct Align16<T>(pub T);
 
 static mut KSTACK: Align16<MaybeUninit<[u8; HART_STACK_LEN]>> = Align16(MaybeUninit::uninit());
 
@@ -66,7 +67,8 @@ extern "C" {
 
 #[panic_handler]
 fn on_panic(info: &core::panic::PanicInfo) -> ! {
-    println!("panic: {info}");
+    let _ = disable_intr();
+    println!("[FATAL] panic: {info}");
     halt()
 }
 
@@ -175,7 +177,7 @@ unsafe fn init_heap(dt: &DevTree) {
 
         Ok(Some((reg.u64(0)?, reg.u64(1)?)))
     }) else {
-        panic!("[FATAL] Cannot initialize heap, no memory found in the device tree.");
+        panic!("cannot initialize heap, no memory found in the device tree.");
     };
 
     unsafe {
@@ -224,46 +226,37 @@ unsafe fn init_plic(dt: &DevTree, uart_plic_irq: Option<u32>) -> bool {
 unsafe fn init_vmem(syscon: Option<&Syscon>) {
     unsafe {
         let pt = &mut *addr_of_mut!(KPAGETABLE);
-        assert!(pt.map_identity(
-            addr_of!(_text_start).into(),
-            addr_of!(_text_end).sub_ptr(addr_of!(_text_start)),
-            PTE_R | PTE_X
-        ));
-        assert!(pt.map_identity(
-            addr_of!(_rodata_start).into(),
-            addr_of!(_rodata_end).sub_ptr(addr_of!(_rodata_end)),
-            PTE_R
-        ));
-        assert!(pt.map_identity(
-            addr_of!(_data_start).into(),
-            addr_of!(_bss_end).sub_ptr(addr_of!(_data_start)),
-            PTE_R | PTE_W
-        ));
+        // TODO: apparently the A and D bits can be treated as secondary R and W bits on some boards
+        assert!(pt.map_identity(addr_of!(_text_start), addr_of!(_text_end), PTE_R | PTE_X));
+        assert!(pt.map_identity(addr_of!(_rodata_start), addr_of!(_rodata_end), PTE_R));
+        assert!(pt.map_identity(addr_of!(_data_start), addr_of!(_bss_end), PTE_R | PTE_W));
 
         // TODO: might be worth adding support for mega/gigapages to save some space on page tables
         let Range { start, end } = ALLOCATOR.lock().range();
-        assert!(pt.map_identity(start.into(), end.sub_ptr(start), PTE_R | PTE_W));
-
-        assert!(pt.map_identity(PLIC.addr().into(), 0x1000, PTE_R | PTE_W));
+        assert!(pt.map_identity(start, end, PTE_R | PTE_W));
+        assert!(pt.map_identity(PLIC.addr(), PLIC.addr(), PTE_R | PTE_W));
         let uart_addr = match &*CONS.lock() {
-            DebugIo::Ns16550a(uart) => Some(uart.addr().into()),
+            DebugIo::Ns16550a(uart) => Some(uart.addr()),
             DebugIo::Sbi(_) => None,
         };
         if let Some(uart_addr) = uart_addr {
-            assert!(pt.map_identity(uart_addr, 0x1000, PTE_R | PTE_W));
+            assert!(pt.map_identity(uart_addr, uart_addr, PTE_R | PTE_W));
         }
-        if let Some(syscon) = syscon {
-            assert!(pt.map_identity(syscon.addr().into(), 0x1000, PTE_R | PTE_W));
+        if let Some(syscon) = syscon.map(|syscon| syscon.addr()) {
+            assert!(pt.map_identity(syscon, syscon, PTE_R | PTE_W));
         }
+
+        // the trap vector and return to user code must be mapped in the same place for the kernel
+        // and user programs, or it would cause a page fault as soon as the page table switched
+        // when entering/exiting user mode
+        assert!(trap::map_trap_code(pt));
     }
 }
 
 unsafe fn init_hart(uart_plic_irq: Option<u32>) {
     // enable virtual memory
     sfence_vma();
-    unsafe {
-        w_satp(SATP_MODE_SV39 as usize | (addr_of!(KPAGETABLE) as usize >> 12));
-    }
+    w_satp(PageTable::make_satp(unsafe { addr_of!(KPAGETABLE) }));
     sfence_vma();
 
     // ask for PLIC interrupts
@@ -274,79 +267,6 @@ unsafe fn init_hart(uart_plic_irq: Option<u32>) {
 
     // enable traps and install the trap handler
     trap::hart_install();
-}
-
-fn console(syscon: Option<&Syscon>) -> ! {
-    fn getchar() -> u8 {
-        loop {
-            if let Some(b) = uart::CONS.lock().read() {
-                break b;
-            }
-        }
-    }
-
-    let mut cmd = ArrayString::<256>::new();
-    let mut buf = ArrayVec::<u8, 4>::new();
-    let process_cmd = |cmd: &mut ArrayString<256>| {
-        println!("\nCommand: '{cmd}'");
-        if cmd == "exit" {
-            match syscon {
-                Some(s) => s.shutdown(),
-                None => halt(),
-            }
-        } else if cmd == "restart" {
-            match syscon {
-                Some(s) => s.restart(),
-                None => halt(),
-            }
-        }
-        cmd.clear();
-        print!(">> ");
-    };
-
-    print!("\n>> ");
-    loop {
-        let ch = getchar();
-        match ch {
-            0x0d => {
-                process_cmd(&mut cmd);
-                buf.clear();
-            }
-            0x7f => {
-                /* DEL */
-                if !cmd.is_empty() {
-                    cmd.truncate(cmd.len() - cmd.chars().last().map(|c| c.len_utf8()).unwrap_or(0));
-                    print!("\x08 \x08");
-                }
-            }
-            0x17 => {
-                /* CTRL + backspace */
-                if let Some(&last) = cmd.as_bytes().last() {
-                    let pos = cmd
-                        .bytes()
-                        .rev()
-                        .position(|c| if last == b' ' { c != b' ' } else { c == b' ' })
-                        .map(|p| cmd.len() - p)
-                        .unwrap_or(0);
-                    cmd[pos..].chars().for_each(|_| print!("\x08 \x08"));
-                    cmd.truncate(pos);
-                }
-            }
-            ch if !ch.is_ascii_control() => {
-                if buf.try_push(ch).is_err() {
-                    buf.clear();
-                } else if let Ok(s) = core::str::from_utf8(&buf) {
-                    print!("{s}");
-                    if cmd.try_push_str(s).is_err() {
-                        print!("\nToo long!");
-                        process_cmd(&mut cmd);
-                    }
-                    buf.clear();
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
@@ -387,7 +307,49 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
             r_satp() as *const u8
         );
 
-        halt()
-        // console(syscon.as_ref())
+        // dump_fdt::dump_tree(dt).unwrap();
+
+        println!(
+            "MAGIC TRANSLATED TO PHYS: {:?} RANDOM ADDR: {:?}",
+            trap::USER_TRAP_VEC
+                .to_phys(&*addr_of!(KPAGETABLE))
+                .unwrap_or(vmm::PhysAddr(0))
+                .0 as *const u8,
+            VirtAddr(0x8020_0000)
+                .to_phys(&*addr_of!(KPAGETABLE))
+                .unwrap_or(vmm::PhysAddr(0))
+                .0 as *const u8
+        );
+        println!("RANDOM BYTE: {}", *(0x8020_0000 as *const u8));
+        println!("MAGIC BYTE: {}", *(trap::USER_TRAP_VEC.0 as *const u8));
+
+        let proc = Process::from_function(init_user_mode).expect("couldn't create init process");
+        let trapframe = &*proc.trapframe;
+        println!(
+            "\naddress of fn: {:#010x}, pc: {:#010x} sp: {:#010x}",
+            init_user_mode as usize,
+            trapframe[Reg::PC],
+            trapframe[Reg::SP],
+        );
+        proc.return_into();
+    }
+}
+
+#[naked]
+extern "C" fn init_user_mode() -> ! {
+    unsafe {
+        core::arch::asm!(
+            r"
+            0:
+            li  t0, 10000000
+            li  t1, 0
+            1:
+            addi a0, a0, -1
+            bne  t1, t0, 1b
+            ecall
+            j 0b
+            ",
+            options(noreturn)
+        )
     }
 }

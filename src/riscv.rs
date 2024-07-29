@@ -5,6 +5,8 @@ pub const SIE_STIE: usize = 1 << 5; // timer
 pub const SIE_SSIE: usize = 1 << 1; // software
 
 pub const SSTATUS_SIE: usize = 1 << 1;
+pub const SSTATUS_SPIE: usize = 1 << 5;
+pub const SSTATUS_SPP: usize = 1 << 8;
 
 macro_rules! read_register {
     ($name: ident) => {
@@ -38,8 +40,7 @@ status_reg_fns!(sie);
 status_reg_fns!(stvec);
 status_reg_fns!(sstatus);
 status_reg_fns!(sip);
-status_reg_fns!(pmpaddr0);
-status_reg_fns!(pmpcfg0);
+status_reg_fns!(sepc);
 read_register!(scause);
 read_register!(stval);
 read_register!(time);

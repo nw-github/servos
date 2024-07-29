@@ -17,7 +17,13 @@ SECTIONS {
 
   .text : {
     *(.text.init)               # ensure _start is loaded at ORIGIN
-    *(.text .text.*)
+    *(.text)
+    . = ALIGN(0x1000);
+    _user_trap = .;
+    *(.text.trap)
+    ASSERT(. - _user_trap <= 0x1000, "error: trampoline larger than one page");
+
+    *(.text.*)
     PROVIDE(_text_end = .);
   } >ram
 

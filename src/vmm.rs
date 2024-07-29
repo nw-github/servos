@@ -1,7 +1,6 @@
 use core::ptr::NonNull;
 
 use alloc::boxed::Box;
-use either::Either;
 
 /// SATP register
 ///
@@ -25,13 +24,19 @@ pub const PTE_D: u64 = 1 << 7;
 
 pub const PGSIZE: usize = 0x1000;
 
+pub enum PteLink {
+    Leaf(*mut u8),
+    PageTable(*mut PageTable),
+    Invalid,
+}
+
 #[repr(transparent)]
 #[derive(Clone, Copy, Default)]
 pub struct PageTableEntry(u64);
 
 impl PageTableEntry {
     fn new(pa: PhysAddr, perms: u64) -> Self {
-        Self(((pa.0 as u64 >> 12) << 10) | (perms & 0x3ff) | PTE_V)
+        Self(((pa.0 as u64 >> 12) << 10) | (perms & 0x3ff) | PTE_V | PTE_D | PTE_A)
     }
 
     pub const fn is_valid(self) -> bool {
@@ -71,25 +76,33 @@ impl PageTableEntry {
     }
 
     pub const fn is_leaf(self) -> bool {
-        self.0 & 0b1110 != 0
+        self.0 & (PTE_R | PTE_W | PTE_X) != 0
     }
 
-    pub const fn next(self) -> Either<*mut PageTable, *mut u8> {
+    pub const fn next(self) -> PteLink {
         let addr = (self.0 >> 10) << 12;
-        if self.is_leaf() {
-            Either::Right(addr as *mut _)
+        if !self.is_valid() {
+            PteLink::Invalid
+        } else if self.is_leaf() {
+            PteLink::Leaf(addr as *mut _)
         } else {
-            Either::Left(addr as *mut _)
+            PteLink::PageTable(addr as *mut _)
         }
     }
 }
 
-#[repr(align(0x1000))] // PGSIZE
+#[repr(C, align(0x1000))] // PGSIZE
 pub struct PageTable([PageTableEntry; 512]);
 
 impl PageTable {
     pub const fn new() -> Self {
         PageTable([PageTableEntry(0); 512])
+    }
+
+    pub fn try_alloc() -> Option<Box<PageTable>> {
+        Box::<PageTable>::try_new_zeroed()
+            .map(|ptr| unsafe { ptr.assume_init() })
+            .ok()
     }
 
     /// Map the physical page containing `pa` to the virtual page `va` with permissions `perms`.
@@ -98,23 +111,25 @@ impl PageTable {
     ///
     /// # Panics
     ///
-    /// If the virtual page is already mapped, or any pte except the final one is a leaf entry,
-    /// this function will panic.
-    pub fn map(&mut self, va: VirtAddr, pa: PhysAddr, perms: u64) -> bool {
+    /// If the virtual page is already mapped, any pte except the final one is a leaf entry, or the
+    /// virtual address is too large, this function will panic.
+    pub fn map_page(&mut self, pa: PhysAddr, va: VirtAddr, perms: u64) -> bool {
+        assert!(va < VirtAddr::MAX);
+        assert!(perms & (PTE_R | PTE_W | PTE_X) != 0);
+
         let mut pt = self;
         for level in [2, 1] {
             let entry = &mut pt.0[va.vpn(level)];
-            if !entry.is_valid() {
-                let Ok(ptr) = Box::<PageTable>::try_new_zeroed() else {
-                    return false;
-                };
-                let ptr = Box::into_raw(unsafe { ptr.assume_init() });
-                *entry = PageTableEntry::new(ptr.into(), 0);
-                pt = unsafe { &mut *ptr };
-            } else if let Either::Left(next) = entry.next() {
-                pt = unsafe { &mut *next };
-            } else {
-                panic!("Page table {level} is a leaf node");
+            match entry.next() {
+                PteLink::PageTable(next) => pt = unsafe { &mut *next },
+                PteLink::Leaf(_) => panic!("Page table {level} is a leaf node"),
+                PteLink::Invalid => {
+                    let Some(next) = Self::try_alloc().map(Box::into_raw) else {
+                        return false;
+                    };
+                    *entry = PageTableEntry::new(next.into(), 0);
+                    pt = unsafe { &mut *next };
+                }
             }
         }
 
@@ -128,7 +143,7 @@ impl PageTable {
 
     /// Map all pages in the contiguous physical range `pa` to `pa + size` to the contiguous virtual
     /// range `va` to `va + size`. `pa` and `va` needn't be page aligned.
-    pub fn map_range(&mut self, mut va: VirtAddr, pa: PhysAddr, size: usize, perms: u64) -> bool {
+    pub fn map_range(&mut self, pa: PhysAddr, mut va: VirtAddr, size: usize, perms: u64) -> bool {
         if size == 0 {
             return true;
         }
@@ -136,7 +151,7 @@ impl PageTable {
 
         let [first, last] = [pa.0 & !(PGSIZE - 1), (pa.0 + size - 1) & !(PGSIZE - 1)];
         for (i, page) in (first..=last).step_by(PGSIZE).enumerate() {
-            if !self.map(VirtAddr(va.0 + i * PGSIZE), PhysAddr(page), perms) {
+            if !self.map_page(PhysAddr(page), VirtAddr(va.0 + i * PGSIZE), perms) {
                 return false;
             }
         }
@@ -146,15 +161,30 @@ impl PageTable {
 
     /// Identity map all pages in the contigous physical range `pa` to `pa + size`. Only intended
     /// for use by the kernel.
-    pub fn map_identity(&mut self, pa: PhysAddr, size: usize, perms: u64) -> bool {
-        self.map_range(VirtAddr(pa.0), pa, size, perms)
+    pub fn map_identity(
+        &mut self,
+        start: impl Into<PhysAddr>,
+        end: impl Into<PhysAddr>,
+        perms: u64,
+    ) -> bool {
+        let (start, end) = (start.into(), end.into());
+        let size = if start == end {
+            PGSIZE
+        } else {
+            end.0 - start.0
+        };
+        self.map_range(start, VirtAddr(start.0), size, perms)
+    }
+
+    pub fn make_satp(this: *const PageTable) -> usize {
+        SATP_MODE_SV39 as usize | (this as usize >> 12)
     }
 }
 
 impl Drop for PageTable {
     fn drop(&mut self) {
         for entry in self.0.into_iter().filter(|e| e.is_valid()) {
-            if let Either::Left(pt) = entry.next() {
+            if let PteLink::PageTable(pt) = entry.next() {
                 drop(unsafe { Box::from_raw(pt) });
             }
         }
@@ -171,34 +201,26 @@ impl Drop for PageTable {
 ///
 ///  0 - 11 | Page Offset
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VirtAddr(pub usize);
 
 impl VirtAddr {
-    pub fn translate(self, mut pt: &PageTable) -> Option<PhysAddr> {
-        let mut level = 2;
-        loop {
+    #[allow(clippy::unusual_byte_groupings)]
+    pub const MAX: VirtAddr = VirtAddr(0b100000000_000000000_000000000_000000000000);
+
+    pub fn to_phys(self, mut pt: &PageTable) -> Option<PhysAddr> {
+        for level in (0..=2).rev() {
             let entry = pt.0[self.vpn(level)];
-            if !entry.is_valid() {
-                return None;
-            }
-
             match entry.next() {
-                Either::Left(next) => {
-                    assert!(level != 0, "Page table 0 is not a leaf node!");
-                    pt = unsafe { &*next };
+                PteLink::Leaf(data) => {
+                    let offset = (1 << (12 + level * 9)) - 1;
+                    return Some(PhysAddr(data as usize + (self.0 & offset)));
                 }
-                Either::Right(data) => {
-                    assert!(level == 0, "Page table {level} is a leaf node");
-                    return Some(PhysAddr(data as usize + self.offset()));
-                }
+                PteLink::PageTable(next) => pt = unsafe { &*next },
+                PteLink::Invalid => return None,
             }
-            level -= 1;
         }
-    }
-
-    pub fn offset(self) -> usize {
-        self.0
+        None
     }
 
     pub const fn vpn(self, vpn: usize) -> usize {
@@ -232,5 +254,16 @@ impl<T> From<*mut T> for PhysAddr {
 impl<T> From<NonNull<T>> for PhysAddr {
     fn from(value: NonNull<T>) -> Self {
         Self(value.as_ptr() as usize)
+    }
+}
+
+#[repr(C, align(0x1000))]
+pub struct Page(pub [u8; PGSIZE]);
+
+impl Page {
+    pub fn alloc() -> Option<Box<Page>> {
+        Box::try_new_zeroed()
+            .map(|page| unsafe { page.assume_init() })
+            .ok()
     }
 }

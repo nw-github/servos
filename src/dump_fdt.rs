@@ -1,5 +1,6 @@
 // Adapted from: https://github.com/rs-embedded/fdtdump/blob/master/src/main.rs
 
+use alloc::vec;
 use fdt_rs::base::iters::StringPropIter;
 use fdt_rs::base::DevTree;
 use fdt_rs::error::Result as DevTreeResult;
@@ -152,9 +153,10 @@ impl FdtDumper {
 }
 
 #[allow(unused)]
-pub fn dump_tree(dt: DevTree<'_>, buf: &mut [u8]) -> DevTreeResult<()> {
+pub fn dump_tree(dt: DevTree<'_>) -> DevTreeResult<()> {
     let layout = DevTreeIndex::get_layout(&dt)?;
-    let index = DevTreeIndex::new(dt, &mut buf[..layout.size() + layout.align()])?;
+    let mut buf = vec![0; layout.size() + layout.align()];
+    let index = DevTreeIndex::new(dt, &mut buf)?;
     let mut dumper = FdtDumper { indent: 0 };
     dumper.dump_metadata(&index);
     dumper.dump_level(&index.root())?;
