@@ -16,7 +16,6 @@ use core::{
     ptr::{addr_of, addr_of_mut},
 };
 
-use arrayvec::{ArrayString, ArrayVec};
 use config::HART_STACK_LEN;
 use fdt_rs::{
     base::{DevTree, DevTreeNode},
@@ -32,7 +31,7 @@ use servos::{
     Align16,
 };
 use uart::{DebugIo, CONS};
-use vmm::{PageTable, VirtAddr, PTE_R, PTE_W, PTE_X};
+use vmm::{PageTable, VirtAddr, PGSIZE, PTE_R, PTE_W, PTE_X};
 
 mod config;
 mod dump_fdt;
@@ -182,7 +181,7 @@ unsafe fn init_heap(dt: &DevTree) {
 
     unsafe {
         let kend = addr_of_mut!(_kernel_end);
-        let kend = kend.add(kend.align_offset(0x1000)); // align to next page
+        let kend = kend.add(kend.align_offset(PGSIZE)); // align to next page
         let size = size as usize - (kend as usize - addr as usize);
         let heap = core::slice::from_raw_parts_mut(kend as *mut MaybeUninit<u8>, size);
         println!("Initializing heap:");
@@ -226,7 +225,6 @@ unsafe fn init_plic(dt: &DevTree, uart_plic_irq: Option<u32>) -> bool {
 unsafe fn init_vmem(syscon: Option<&Syscon>) {
     unsafe {
         let pt = &mut *addr_of_mut!(KPAGETABLE);
-        // TODO: apparently the A and D bits can be treated as secondary R and W bits on some boards
         assert!(pt.map_identity(addr_of!(_text_start), addr_of!(_text_end), PTE_R | PTE_X));
         assert!(pt.map_identity(addr_of!(_rodata_start), addr_of!(_rodata_end), PTE_R));
         assert!(pt.map_identity(addr_of!(_data_start), addr_of!(_bss_end), PTE_R | PTE_W));
@@ -254,6 +252,23 @@ unsafe fn init_vmem(syscon: Option<&Syscon>) {
 }
 
 unsafe fn init_hart(uart_plic_irq: Option<u32>) {
+    unsafe {
+        println!(
+            "MAGIC TRANSLATED TO PHYS: {:?} CURRENT FN: {:?} UNMAPPED: {:?}",
+            trap::USER_TRAP_VEC
+                .to_phys(&*addr_of!(KPAGETABLE))
+                .unwrap_or(vmm::PhysAddr(0))
+                .0 as *const u8,
+            VirtAddr(init_hart as usize)
+                .to_phys(&*addr_of!(KPAGETABLE))
+                .unwrap_or(vmm::PhysAddr(0))
+                .0 as *const u8,
+            VirtAddr(0x90000000)
+                .to_phys(&*addr_of!(KPAGETABLE))
+                .unwrap_or(vmm::PhysAddr(0))
+                .0 as *const u8,
+        );
+    }
     // enable virtual memory
     sfence_vma();
     w_satp(PageTable::make_satp(unsafe { addr_of!(KPAGETABLE) }));
@@ -309,17 +324,6 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
 
         // dump_fdt::dump_tree(dt).unwrap();
 
-        println!(
-            "MAGIC TRANSLATED TO PHYS: {:?} RANDOM ADDR: {:?}",
-            trap::USER_TRAP_VEC
-                .to_phys(&*addr_of!(KPAGETABLE))
-                .unwrap_or(vmm::PhysAddr(0))
-                .0 as *const u8,
-            VirtAddr(0x8020_0000)
-                .to_phys(&*addr_of!(KPAGETABLE))
-                .unwrap_or(vmm::PhysAddr(0))
-                .0 as *const u8
-        );
         println!("RANDOM BYTE: {}", *(0x8020_0000 as *const u8));
         println!("MAGIC BYTE: {}", *(trap::USER_TRAP_VEC.0 as *const u8));
 

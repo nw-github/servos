@@ -49,8 +49,7 @@ enum TrapCause {
     HardwareError = 19,
 }
 
-pub const USER_TRAP_VEC: VirtAddr = VirtAddr(0x7000_0000);
-// pub const USER_TRAP_VEC: VirtAddr = VirtAddr(VirtAddr::MAX.0 - PGSIZE);
+pub const USER_TRAP_VEC: VirtAddr = VirtAddr(VirtAddr::MAX.0 - PGSIZE);
 
 #[naked]
 #[link_section = ".text.trap"]

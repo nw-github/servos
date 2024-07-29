@@ -18,6 +18,7 @@ SECTIONS {
   .text : {
     *(.text.init)               # ensure _start is loaded at ORIGIN
     *(.text)
+
     . = ALIGN(0x1000);
     _user_trap = .;
     *(.text.trap)

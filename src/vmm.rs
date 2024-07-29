@@ -20,7 +20,8 @@ pub const PTE_U: u64 = 1 << 4;
 pub const PTE_G: u64 = 1 << 5;
 pub const PTE_A: u64 = 1 << 6;
 pub const PTE_D: u64 = 1 << 7;
-// pub const PTE_RSW: u64 = (1 << 8) | (1 << 9);
+pub const PTE_RSW0: u64 = 1 << 8;
+pub const PTE_RSW1: u64 = 1 << 9;
 
 pub const PGSIZE: usize = 0x1000;
 
@@ -36,7 +37,8 @@ pub struct PageTableEntry(u64);
 
 impl PageTableEntry {
     fn new(pa: PhysAddr, perms: u64) -> Self {
-        Self(((pa.0 as u64 >> 12) << 10) | (perms & 0x3ff) | PTE_V | PTE_D | PTE_A)
+        // the A and D bits can be treated as secondary R and W bits on some boards
+        Self(((pa.0 as u64 >> 12) << 10) | (perms & 0x3ff) | PTE_V)
     }
 
     pub const fn is_valid(self) -> bool {
@@ -71,8 +73,12 @@ impl PageTableEntry {
         self.0 & PTE_D != 0
     }
 
-    pub const fn rsw(self) -> u64 {
-        (self.0 >> 8) & 0b11
+    pub const fn rsw0(self) -> bool {
+        self.0 & PTE_RSW0 != 0
+    }
+
+    pub const fn rsw1(self) -> bool {
+        self.0 & PTE_RSW1 != 0
     }
 
     pub const fn is_leaf(self) -> bool {
@@ -118,7 +124,7 @@ impl PageTable {
         assert!(perms & (PTE_R | PTE_W | PTE_X) != 0);
 
         let mut pt = self;
-        for level in [2, 1] {
+        for level in (1..=2).rev() {
             let entry = &mut pt.0[va.vpn(level)];
             match entry.next() {
                 PteLink::PageTable(next) => pt = unsafe { &mut *next },
@@ -156,6 +162,9 @@ impl PageTable {
             }
         }
 
+        crate::println!("\nMapping {:#010x} to {:#010x} (size {size:#x})", pa.0, pa.0 + size);
+        crate::println!("Pages   {first:#010x} to {last:#010x}");
+
         true
     }
 
@@ -168,6 +177,8 @@ impl PageTable {
         perms: u64,
     ) -> bool {
         let (start, end) = (start.into(), end.into());
+        assert!(start.0 <= end.0);
+
         let size = if start == end {
             PGSIZE
         } else {
@@ -177,7 +188,7 @@ impl PageTable {
     }
 
     pub fn make_satp(this: *const PageTable) -> usize {
-        SATP_MODE_SV39 as usize | (this as usize >> 12)
+        ((SATP_MODE_SV39 as usize) << 60) | (this as usize >> 12)
     }
 }
 
@@ -212,9 +223,9 @@ impl VirtAddr {
         for level in (0..=2).rev() {
             let entry = pt.0[self.vpn(level)];
             match entry.next() {
-                PteLink::Leaf(data) => {
+                PteLink::Leaf(addr) => {
                     let offset = (1 << (12 + level * 9)) - 1;
-                    return Some(PhysAddr(data as usize + (self.0 & offset)));
+                    return Some(PhysAddr(addr as usize + (self.0 & offset)));
                 }
                 PteLink::PageTable(next) => pt = unsafe { &*next },
                 PteLink::Invalid => return None,
