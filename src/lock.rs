@@ -1,5 +1,6 @@
 use core::{
     cell::UnsafeCell,
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -55,16 +56,28 @@ impl<T> SpinLocked<T> {
 
 pub struct Guard<'a, T> {
     lock: &'a SpinLocked<T>,
-    token: InterruptToken,
+    token: ManuallyDrop<InterruptToken>,
 }
 
 impl<'a, T> Guard<'a, T> {
     pub fn new(token: InterruptToken, lock: &'a SpinLocked<T>) -> Self {
-        Self { lock, token }
+        Self {
+            lock,
+            token: ManuallyDrop::new(token),
+        }
     }
 
     pub fn interrupt_token<'g>(this: &'g Guard<'a, T>) -> &'g InterruptToken {
         &this.token
+    }
+
+    pub fn drop_and_keep_token(mut this: Guard<'a, T>) -> InterruptToken {
+        unsafe {
+            let token = ManuallyDrop::take(&mut this.token);
+            this.lock.unlock();
+            core::mem::forget(this);
+            token
+        }
     }
 }
 
@@ -72,6 +85,7 @@ impl<T> Drop for Guard<'_, T> {
     fn drop(&mut self) {
         unsafe {
             self.lock.unlock();
+            ManuallyDrop::drop(&mut self.token)
         }
     }
 }

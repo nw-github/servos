@@ -1,5 +1,6 @@
 use core::num::NonZeroU32;
 
+use alloc::boxed::Box;
 use servos::{
     riscv::{r_sstatus, w_sstatus, SSTATUS_SPIE, SSTATUS_SPP},
     sbi,
@@ -8,13 +9,12 @@ use servos::{
 use crate::{
     plic::PLIC,
     print, println,
-    proc::{Process, USER_TRAP_FRAME},
+    proc::{Process, ProcessNode, Reg, Scheduler, PROC_LIST, USER_TRAP_FRAME},
     riscv::{
-        enable_intr, r_scause, r_sepc, r_time, w_sie, w_stvec, InterruptToken, SIE_SEIE, SIE_SSIE,
-        SIE_STIE,
+        enable_intr, r_scause, r_time, w_sie, w_stvec, InterruptToken, SIE_SEIE, SIE_SSIE, SIE_STIE,
     },
     uart::CONS,
-    vmm::{self, PageTable, VirtAddr, PGSIZE, PTE_R, PTE_RX, PTE_X},
+    vmm::{self, PageTable, VirtAddr, PGSIZE, PTE_RX},
 };
 
 const INTERRUPT_FLAG_BIT: usize = 1 << (usize::BITS - 1);
@@ -28,7 +28,7 @@ static mut TRAP_CONTEXT: TrapContext = TrapContext { uart_irq: None };
 #[repr(usize)]
 #[derive(strum::FromRepr, Debug)]
 #[allow(clippy::enum_clike_unportable_variant)]
-enum TrapCause {
+pub enum TrapCause {
     // Interrupts
     SoftwareIntr = 1 | INTERRUPT_FLAG_BIT,
     TimerIntr = 5 | INTERRUPT_FLAG_BIT,
@@ -50,6 +50,13 @@ enum TrapCause {
     StorePageFault = 15,
     SoftwareCheck = 18,
     HardwareError = 19,
+}
+
+impl TrapCause {
+    pub fn current() -> Result<TrapCause, usize> {
+        let cause = r_scause();
+        TrapCause::from_repr(cause & (INTERRUPT_FLAG_BIT | 0xff)).ok_or(cause)
+    }
 }
 
 pub const USER_TRAP_VEC: VirtAddr = VirtAddr(VirtAddr::MAX.0 - PGSIZE);
@@ -101,7 +108,7 @@ extern "C" fn user_trap_vec() {
             csrr a0, sepc
             sd   a0, 0x00(t0)           # load previous PC into TrapFrame::regs[0]
 
-            mv         a1, {proc}(t0)
+            ld         a1, {proc}(t0)
             ld         tp, {hartid}(t0)          # load kernel hartid
             ld         sp, {stack}(t0)
             ld         ra, {handle}(t0)
@@ -183,44 +190,61 @@ extern "C" fn __return_to_user(satp: usize) -> ! {
 
 #[repr(align(4))]
 extern "riscv-interrupt-s" fn sv_trap_vec() {
-    handle_trap(r_sepc(), None);
-}
-
-pub fn handle_trap(mut sepc: usize, proc: Option<&mut Process>) -> usize {
-    let cause = r_scause();
-    if proc.is_some() {
-        print!("Interrupt from user mode: ");
-    }
-    match TrapCause::from_repr(cause & (INTERRUPT_FLAG_BIT | 0xff)) {
-        Some(TrapCause::ExternalIntr) => {
-            let irq = PLIC.hart_claim();
-            let Some(num) = irq.value() else {
-                println!("PLIC interrupt with null irq");
-                return sepc;
-            };
-
-            if unsafe { TRAP_CONTEXT.uart_irq.as_ref() }.is_some_and(|v| v == num) {
-                let ch = CONS.lock().read().unwrap();
-                println!("UART interrupt: {ch:#04x} ({})", ch as char);
-            } else {
-                println!("PLIC interrupt with unknown irq {num:#x}");
-            }
-        }
-        Some(TrapCause::TimerIntr) => {
+    match TrapCause::current() {
+        Ok(TrapCause::ExternalIntr) => handle_external_intr(),
+        Ok(TrapCause::TimerIntr) => {
             println!("Timer!");
             _ = sbi::timer::set_timer(r_time() + 10_000_000);
         }
-        Some(TrapCause::IllegalInstr) => panic!("Illegal instruction!"),
-        Some(TrapCause::EcallFromUMode) => {
-            let proc = proc.expect("handling EcallFromUMode with no process");
-            println!("ecall from process with PID {}", proc.pid);
+        Ok(ex) => panic!("Unhandled trap: {ex:?}"),
+        Err(cause) => panic!("Unhandled trap: unknown {cause:#x}"),
+    }
+}
+
+pub extern "C" fn handle_u_trap(mut sepc: usize, mut proc: ProcessNode) -> ! {
+    let mut must_yield = false;
+    print!(
+        "Trap from process with PID {}: ",
+        unsafe { proc.as_mut() }.lock().pid
+    );
+    match TrapCause::current() {
+        Ok(TrapCause::ExternalIntr) => handle_external_intr(),
+        Ok(TrapCause::TimerIntr) => {
+            println!("Timer!");
+            _ = sbi::timer::set_timer(r_time() + 10_000_000);
+            must_yield = true;
+        }
+        Ok(TrapCause::EcallFromUMode) => {
+            println!("ecall");
             sepc += 4;
         }
-        Some(ex) => panic!("Unhandled trap: {ex:?}"),
-        None => panic!("Unhandled trap: no match for cause {cause:#x}"),
+        Ok(unk) => {
+            let mut proc = unsafe { proc.as_mut() }.lock();
+            proc.killed = true;
+            println!("Exception {unk:?} raised, killing process");
+        }
+        Err(cause) => panic!("Unhandled trap: no match for cause {cause:#x}"),
     }
 
-    sepc
+    unsafe {
+        let mut plocked = proc.as_mut().lock();
+        (*plocked.trapframe)[Reg::PC] = sepc;
+        if plocked.killed {
+            Process::destroy(proc, plocked);
+        } else if !must_yield {
+            Process::return_into(plocked);
+        } else if !Scheduler::take(proc) {
+            println!("Scheduler::take failed for PID {}, OOM!", plocked.pid);
+            Process::destroy(proc, plocked);
+            /* OOM */
+        }
+
+        enable_intr();
+    }
+
+    loop {
+        Scheduler::try_find_execute()
+    }
 }
 
 pub unsafe fn init_context(uart_irq: Option<u32>) {
@@ -248,6 +272,7 @@ pub fn map_trap_code(pt: &mut PageTable) -> bool {
 pub fn return_to_user(_token: InterruptToken, satp: usize) -> ! {
     #[allow(unused_assignments)]
     let mut __ret = __return_to_user as extern "C" fn(usize) -> !; // just for type inference
+
     #[allow(clippy::missing_transmute_annotations)]
     {
         // we must __return_to_user through the commonly mapped USER_TRAP_VEC page, so the code is
@@ -259,4 +284,19 @@ pub fn return_to_user(_token: InterruptToken, satp: usize) -> ! {
     w_stvec(USER_TRAP_VEC.0 + vmm::page_offset(user_trap_vec as usize));
     w_sstatus(r_sstatus() & !(SSTATUS_SPP) | SSTATUS_SPIE); // set user mode, enable interrupts in user mode
     __ret(satp);
+}
+
+fn handle_external_intr() {
+    let irq = PLIC.hart_claim();
+    let Some(num) = irq.value() else {
+        println!("PLIC interrupt with null irq");
+        return;
+    };
+
+    if unsafe { TRAP_CONTEXT.uart_irq.as_ref() }.is_some_and(|v| v == num) {
+        let ch = CONS.lock().read().unwrap();
+        println!("UART interrupt: {ch:#04x} ({})", ch as char);
+    } else {
+        println!("PLIC interrupt with unknown irq {num:#x}");
+    }
 }

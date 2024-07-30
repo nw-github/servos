@@ -21,7 +21,7 @@ use fdt_rs::{
     prelude::{FallibleIterator, PropReader},
 };
 use plic::PLIC;
-use proc::Process;
+use proc::{Process, Scheduler};
 use servos::{
     drivers::{Ns16550a, Syscon},
     heap::BlockAlloc,
@@ -30,7 +30,7 @@ use servos::{
     Align16,
 };
 use uart::{DebugIo, CONS};
-use vmm::{PageTable, PGSIZE, PTE_R, PTE_RW, PTE_RX, PTE_W, PTE_X};
+use vmm::{PageTable, PGSIZE, PTE_R, PTE_RW, PTE_RX};
 
 mod config;
 mod dump_fdt;
@@ -39,7 +39,6 @@ mod proc;
 mod trap;
 mod uart;
 mod vmm;
-mod sched;
 
 extern crate alloc;
 
@@ -308,11 +307,13 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
 
         // dump_fdt::dump_tree(dt).unwrap();
 
-        Process::from_function(init_user_mode)
-            .expect("couldn't create init process")
-            .return_into();
+        Process::spawn_from_function(init_user_mode).expect("couldn't create process 0");
+        Process::spawn_from_function(init_user_mode).expect("couldn't create process 1");
+        Process::spawn_from_function(init_user_mode).expect("couldn't create process 2");
 
-        halt()
+        loop {
+            Scheduler::try_find_execute();
+        }
     }
 }
 
