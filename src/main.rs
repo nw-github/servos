@@ -20,7 +20,7 @@ use fdt_rs::{
     base::{DevTree, DevTreeNode},
     prelude::{FallibleIterator, PropReader},
 };
-use hart::{set_hart_info, HartInfo, HART_STACK_LEN, MAX_HARTS};
+use hart::{set_hart_info, HartInfo, PowerManagement, HART_STACK_LEN, MAX_HARTS, POWER};
 use plic::PLIC;
 use proc::{Process, Scheduler};
 use servos::{
@@ -242,7 +242,7 @@ unsafe fn init_plic(dt: &DevTree, uart_plic_irq: Option<u32>) -> bool {
     true
 }
 
-unsafe fn init_vmem(syscon: Option<&Syscon>) {
+unsafe fn init_vmem() {
     let pt = unsafe { &mut *addr_of_mut!(KPAGETABLE) };
     unsafe {
         assert!(pt.map_identity(addr_of!(_text_start), addr_of!(_text_end), PTE_RX));
@@ -262,7 +262,11 @@ unsafe fn init_vmem(syscon: Option<&Syscon>) {
     if let Some(uart_addr) = uart_addr {
         assert!(pt.map_identity(uart_addr, uart_addr, PTE_RW));
     }
-    if let Some(syscon) = syscon.map(|syscon| syscon.addr()) {
+    let syscon = match &*POWER.lock() {
+        PowerManagement::Syscon(s) => Some(s.addr()),
+        PowerManagement::Sbi(_) => None,
+    };
+    if let Some(syscon) = syscon {
         assert!(pt.map_identity(syscon, syscon, PTE_RW));
     }
 
@@ -310,17 +314,15 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
             r_satp() as *const u8,
         );
 
-        let syscon = init_syscon(&dt);
-        if let Some(syscon) = &syscon {
+        if let Some(syscon) = init_syscon(&dt) {
             println!("Syscon compatible device found at {:?}", syscon.addr());
-        } else {
-            println!("No syscon compatible device found. Shutdown will spin.");
+            *POWER.lock() = PowerManagement::Syscon(syscon);
         }
 
         // note: the device tree lives somewhere in RAM outside the kernel area, it's potentially
         // invalidated once we initialize the heap over it
         init_heap(&dt);
-        init_vmem(syscon.as_ref());
+        init_vmem();
         init_hart(addr_of!(KSTACK) as usize + HART_STACK_LEN);
         println!(
             "Initialized kernel page table, satp: {:?}",
