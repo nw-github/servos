@@ -14,7 +14,7 @@ use crate::{
         SIE_STIE,
     },
     uart::CONS,
-    vmm::{self, PageTable, VirtAddr, PGSIZE, PTE_R, PTE_X},
+    vmm::{self, PageTable, VirtAddr, PGSIZE, PTE_R, PTE_RX, PTE_X},
 };
 
 const INTERRUPT_FLAG_BIT: usize = 1 << (usize::BITS - 1);
@@ -101,6 +101,7 @@ extern "C" fn user_trap_vec() {
             csrr a0, sepc
             sd   a0, 0x00(t0)           # load previous PC into TrapFrame::regs[0]
 
+            mv         a1, {proc}(t0)
             ld         tp, {hartid}(t0)          # load kernel hartid
             ld         sp, {stack}(t0)
             ld         ra, {handle}(t0)
@@ -115,6 +116,7 @@ extern "C" fn user_trap_vec() {
             hartid = const core::mem::offset_of!(crate::proc::TrapFrame, hartid),
             stack = const core::mem::offset_of!(crate::proc::TrapFrame, ksp),
             handle = const core::mem::offset_of!(crate::proc::TrapFrame, handle_trap),
+            proc = const core::mem::offset_of!(crate::proc::TrapFrame, proc),
 
             options(noreturn),
         );
@@ -187,7 +189,7 @@ extern "riscv-interrupt-s" fn sv_trap_vec() {
 pub fn handle_trap(mut sepc: usize, proc: Option<&mut Process>) -> usize {
     let cause = r_scause();
     if proc.is_some() {
-        print!("Interrupt from user mode (satp {:#x}): ", crate::r_satp());
+        print!("Interrupt from user mode: ");
     }
     match TrapCause::from_repr(cause & (INTERRUPT_FLAG_BIT | 0xff)) {
         Some(TrapCause::ExternalIntr) => {
@@ -199,7 +201,7 @@ pub fn handle_trap(mut sepc: usize, proc: Option<&mut Process>) -> usize {
 
             if unsafe { TRAP_CONTEXT.uart_irq.as_ref() }.is_some_and(|v| v == num) {
                 let ch = CONS.lock().read().unwrap();
-                println!("UART interrupt: {ch:#04x}");
+                println!("UART interrupt: {ch:#04x} ({})", ch as char);
             } else {
                 println!("PLIC interrupt with unknown irq {num:#x}");
             }
@@ -239,7 +241,7 @@ pub fn map_trap_code(pt: &mut PageTable) -> bool {
     pt.map_page(
         vmm::page_number(user_trap_vec as usize).into(),
         USER_TRAP_VEC,
-        PTE_R | PTE_X,
+        PTE_RX,
     )
 }
 

@@ -76,6 +76,10 @@ impl InterruptToken {
     pub fn forget(self) {
         core::mem::forget(self);
     }
+
+    pub fn was_enabled(&self) -> bool {
+        self.enabled
+    }
 }
 
 impl Drop for InterruptToken {

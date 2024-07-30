@@ -6,8 +6,7 @@
 #![feature(fn_align)]
 #![feature(allocator_api)]
 #![feature(new_uninit)]
-#![feature(ptr_sub_ptr)]
-#![feature(try_with_capacity)]
+#![feature(stmt_expr_attributes)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use core::{
@@ -22,7 +21,7 @@ use fdt_rs::{
     prelude::{FallibleIterator, PropReader},
 };
 use plic::PLIC;
-use proc::{Process, Reg};
+use proc::Process;
 use servos::{
     drivers::{Ns16550a, Syscon},
     heap::BlockAlloc,
@@ -31,7 +30,7 @@ use servos::{
     Align16,
 };
 use uart::{DebugIo, CONS};
-use vmm::{PageTable, PGSIZE, PTE_R, PTE_W, PTE_X};
+use vmm::{PageTable, PGSIZE, PTE_R, PTE_RW, PTE_RX, PTE_W, PTE_X};
 
 mod config;
 mod dump_fdt;
@@ -40,6 +39,7 @@ mod proc;
 mod trap;
 mod uart;
 mod vmm;
+mod sched;
 
 extern crate alloc;
 
@@ -225,25 +225,25 @@ unsafe fn init_plic(dt: &DevTree, uart_plic_irq: Option<u32>) -> bool {
 unsafe fn init_vmem(syscon: Option<&Syscon>) {
     let pt = unsafe { &mut *addr_of_mut!(KPAGETABLE) };
     unsafe {
-        assert!(pt.map_identity(addr_of!(_text_start), addr_of!(_text_end), PTE_R | PTE_X));
+        assert!(pt.map_identity(addr_of!(_text_start), addr_of!(_text_end), PTE_RX));
         assert!(pt.map_identity(addr_of!(_rodata_start), addr_of!(_rodata_end), PTE_R));
-        assert!(pt.map_identity(addr_of!(_data_start), addr_of!(_bss_end), PTE_R | PTE_W));
+        assert!(pt.map_identity(addr_of!(_data_start), addr_of!(_bss_end), PTE_RW));
 
-        assert!(pt.map_identity(PLIC.addr(), PLIC.addr().add(0x3ff_fffc), PTE_R | PTE_W));
+        assert!(pt.map_identity(PLIC.addr(), PLIC.addr().add(0x3ff_fffc), PTE_RW));
     }
 
     // TODO: might be worth adding support for mega/gigapages to save some space on page tables
     let Range { start, end } = ALLOCATOR.lock().range();
-    assert!(pt.map_identity(start, end, PTE_R | PTE_W));
+    assert!(pt.map_identity(start, end, PTE_RW));
     let uart_addr = match &*CONS.lock() {
         DebugIo::Ns16550a(uart) => Some(uart.addr()),
         DebugIo::Sbi(_) => None,
     };
     if let Some(uart_addr) = uart_addr {
-        assert!(pt.map_identity(uart_addr, uart_addr, PTE_R | PTE_W));
+        assert!(pt.map_identity(uart_addr, uart_addr, PTE_RW));
     }
     if let Some(syscon) = syscon.map(|syscon| syscon.addr()) {
-        assert!(pt.map_identity(syscon, syscon, PTE_R | PTE_W));
+        assert!(pt.map_identity(syscon, syscon, PTE_RW));
     }
 
     // the trap vector and return to user code must be mapped in the same place for the kernel
@@ -311,6 +311,8 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
         Process::from_function(init_user_mode)
             .expect("couldn't create init process")
             .return_into();
+
+        halt()
     }
 }
 

@@ -20,8 +20,14 @@ pub const PTE_U: u64 = 1 << 4;
 pub const PTE_G: u64 = 1 << 5;
 pub const PTE_A: u64 = 1 << 6;
 pub const PTE_D: u64 = 1 << 7;
-pub const PTE_RSW0: u64 = 1 << 8;
+/// Marks the page as owned by the page table, allowing the PageTable destructor to free it. This is
+/// potentially dangerous
+pub const PTE_OWNED: u64 = 1 << 8;
 pub const PTE_RSW1: u64 = 1 << 9;
+
+pub const PTE_RWX: u64 = PTE_R | PTE_W | PTE_X;
+pub const PTE_RX: u64 = PTE_R | PTE_X;
+pub const PTE_RW: u64 = PTE_R | PTE_W;
 
 pub const PGSIZE: usize = 0x1000;
 
@@ -73,8 +79,9 @@ impl PageTableEntry {
         self.0 & PTE_D != 0
     }
 
-    pub const fn rsw0(self) -> bool {
-        self.0 & PTE_RSW0 != 0
+    /// Is the physical page owned by this page table
+    pub const fn is_owned(self) -> bool {
+        self.0 & PTE_OWNED != 0
     }
 
     pub const fn rsw1(self) -> bool {
@@ -188,8 +195,10 @@ impl PageTable {
 impl Drop for PageTable {
     fn drop(&mut self) {
         for entry in self.0.into_iter().filter(|e| e.is_valid()) {
-            if let PteLink::PageTable(pt) = entry.next() {
-                drop(unsafe { Box::from_raw(pt) });
+            match entry.next() {
+                PteLink::PageTable(pt) => drop(unsafe { Box::from_raw(pt) }),
+                PteLink::Leaf(pt) => drop(unsafe { Box::from_raw(pt as *mut Page) }),
+                _ => {}
             }
         }
     }
