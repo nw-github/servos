@@ -150,20 +150,15 @@ impl PageTable {
     /// Map all pages in the contiguous physical range `pa` to `pa + size` to the contiguous virtual
     /// range `va` to `va + size`. `pa` and `va` needn't be page aligned.
     pub fn map_range(&mut self, pa: PhysAddr, mut va: VirtAddr, size: usize, perms: u64) -> bool {
-        if size == 0 {
-            return true;
-        }
+        assert!(size != 0);
         va.0 &= !(PGSIZE - 1);
 
-        let [first, last] = [pa.0 & !(PGSIZE - 1), (pa.0 + size - 1) & !(PGSIZE - 1)];
+        let [first, last] = [page_number(pa), page_number(pa.0 + size - 1)];
         for (i, page) in (first..=last).step_by(PGSIZE).enumerate() {
             if !self.map_page(PhysAddr(page), VirtAddr(va.0 + i * PGSIZE), perms) {
                 return false;
             }
         }
-
-        crate::println!("\nMapping {:#010x} to {:#010x} (size {size:#x})", pa.0, pa.0 + size);
-        crate::println!("Pages   {first:#010x} to {last:#010x}");
 
         true
     }
@@ -177,8 +172,6 @@ impl PageTable {
         perms: u64,
     ) -> bool {
         let (start, end) = (start.into(), end.into());
-        assert!(start.0 <= end.0);
-
         let size = if start == end {
             PGSIZE
         } else {
@@ -277,4 +270,12 @@ impl Page {
             .map(|page| unsafe { page.assume_init() })
             .ok()
     }
+}
+
+pub fn page_number(addr: impl Into<PhysAddr>) -> usize {
+    addr.into().0 & !(PGSIZE - 1)
+}
+
+pub fn page_offset(addr: impl Into<PhysAddr>) -> usize {
+    addr.into().0 & (PGSIZE - 1)
 }

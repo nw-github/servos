@@ -1,17 +1,20 @@
 use core::num::NonZeroU32;
 
-use servos::sbi;
+use servos::{
+    riscv::{r_sstatus, w_sstatus, SSTATUS_SPIE, SSTATUS_SPP},
+    sbi,
+};
 
 use crate::{
     plic::PLIC,
-    println,
-    proc::{Process, Reg, CURRENT_PROC, USER_TRAP_FRAME},
+    print, println,
+    proc::{Process, USER_TRAP_FRAME},
     riscv::{
         enable_intr, r_scause, r_sepc, r_time, w_sie, w_stvec, InterruptToken, SIE_SEIE, SIE_SSIE,
         SIE_STIE,
     },
     uart::CONS,
-    vmm::{PageTable, VirtAddr, PGSIZE, PTE_R, PTE_X},
+    vmm::{self, PageTable, VirtAddr, PGSIZE, PTE_R, PTE_X},
 };
 
 const INTERRUPT_FLAG_BIT: usize = 1 << (usize::BITS - 1);
@@ -79,15 +82,15 @@ extern "C" fn user_trap_vec() {
             sd   a7, 0x88(t0)
             sd   s2, 0x90(t0)
             sd   s3, 0x98(t0)
-            sd   s4, 0x90(t0)
+            sd   s4, 0xa0(t0)
             sd   s5, 0xa8(t0)
-            sd   s6, 0xa0(t0)
+            sd   s6, 0xb0(t0)
             sd   s7, 0xb8(t0)
-            sd   s8, 0xb0(t0)
+            sd   s8, 0xc0(t0)
             sd   s9, 0xc8(t0)
-            sd   s10, 0xc0(t0)
+            sd   s10, 0xd0(t0)
             sd   s11, 0xd8(t0)
-            sd   t3, 0xd0(t0)
+            sd   t3, 0xe0(t0)
             sd   t4, 0xe8(t0)
             sd   t5, 0xf0(t0)
             sd   t6, 0xf8(t0)
@@ -98,18 +101,20 @@ extern "C" fn user_trap_vec() {
             csrr a0, sepc
             sd   a0, 0x00(t0)           # load previous PC into TrapFrame::regs[0]
 
-            ld         t1, 0x100(t0)    # load kernel SATP and switch to kernel page table
+            ld         tp, {hartid}(t0)          # load kernel hartid
+            ld         sp, {stack}(t0)
+            ld         ra, {handle}(t0)
+            ld         t1, {satp}(t0)    # load kernel SATP and switch to kernel page table
             sfence.vma zero, zero
             csrw       satp, t1
             sfence.vma zero, zero
 
-            ld   tp, 0x108(t0)          # load kernel hartid
-            la   sp, {kstack}
-
-            tail {handle}
+            jr ra
             ",
-            handle = sym handle_u_trap,
-            kstack = sym crate::KSTACK,
+            satp = const core::mem::offset_of!(crate::proc::TrapFrame, ksatp),
+            hartid = const core::mem::offset_of!(crate::proc::TrapFrame, hartid),
+            stack = const core::mem::offset_of!(crate::proc::TrapFrame, ksp),
+            handle = const core::mem::offset_of!(crate::proc::TrapFrame, handle_trap),
 
             options(noreturn),
         );
@@ -124,8 +129,7 @@ extern "C" fn __return_to_user(satp: usize) -> ! {
             r"
             li   t0, {trap_frame}
             csrw sscratch, t0
-            csrs sstatus, 5             # set SPIE (previous interrupts enabled)
-            csrc sstatus, 8             # clear SPP (previous mode to user)
+            csrr t1, sstatus
 
             sfence.vma zero, zero
             csrw satp, a0
@@ -153,15 +157,15 @@ extern "C" fn __return_to_user(satp: usize) -> ! {
             ld   a7,  0x88(t0)
             ld   s2,  0x90(t0)
             ld   s3,  0x98(t0)
-            ld   s4,  0x90(t0)
+            ld   s4,  0xa0(t0)
             ld   s5,  0xa8(t0)
-            ld   s6,  0xa0(t0)
+            ld   s6,  0xb0(t0)
             ld   s7,  0xb8(t0)
-            ld   s8,  0xb0(t0)
+            ld   s8,  0xc0(t0)
             ld   s9,  0xc8(t0)
-            ld   s10, 0xc0(t0)
+            ld   s10, 0xd0(t0)
             ld   s11, 0xd8(t0)
-            ld   t3,  0xd0(t0)
+            ld   t3,  0xe0(t0)
             ld   t4,  0xe8(t0)
             ld   t5,  0xf0(t0)
             ld   t6,  0xf8(t0)
@@ -177,20 +181,13 @@ extern "C" fn __return_to_user(satp: usize) -> ! {
 
 #[repr(align(4))]
 extern "riscv-interrupt-s" fn sv_trap_vec() {
-    handle_trap(r_sepc(), r_scause(), None);
+    handle_trap(r_sepc(), None);
 }
 
-extern "C" fn handle_u_trap(sepc: usize) -> ! {
-    unsafe {
-        let mut proc = CURRENT_PROC.take().unwrap();
-        (*proc.trapframe)[Reg::PC] = handle_trap(sepc, r_scause(), Some(&mut proc));
-        proc.return_into();
-    }
-}
-
-fn handle_trap(mut sepc: usize, cause: usize, proc: Option<&mut Process>) -> usize {
+pub fn handle_trap(mut sepc: usize, proc: Option<&mut Process>) -> usize {
+    let cause = r_scause();
     if proc.is_some() {
-        println!("Interrupt from user mode!");
+        print!("Interrupt from user mode (satp {:#x}): ", crate::r_satp());
     }
     match TrapCause::from_repr(cause & (INTERRUPT_FLAG_BIT | 0xff)) {
         Some(TrapCause::ExternalIntr) => {
@@ -204,7 +201,7 @@ fn handle_trap(mut sepc: usize, cause: usize, proc: Option<&mut Process>) -> usi
                 let ch = CONS.lock().read().unwrap();
                 println!("UART interrupt: {ch:#04x}");
             } else {
-                println!("PLIC interrupt with unknown irq {num}");
+                println!("PLIC interrupt with unknown irq {num:#x}");
             }
         }
         Some(TrapCause::TimerIntr) => {
@@ -240,7 +237,7 @@ pub fn hart_install() {
 
 pub fn map_trap_code(pt: &mut PageTable) -> bool {
     pt.map_page(
-        (user_trap_vec as usize & !0xfff).into(),
+        vmm::page_number(user_trap_vec as usize).into(),
         USER_TRAP_VEC,
         PTE_R | PTE_X,
     )
@@ -253,17 +250,11 @@ pub fn return_to_user(_token: InterruptToken, satp: usize) -> ! {
     {
         // we must __return_to_user through the commonly mapped USER_TRAP_VEC page, so the code is
         // still there when satp is switched to the user table
-        let return_to_user = USER_TRAP_VEC.0 + (__return_to_user as usize & 0xfff);
+        let return_to_user = USER_TRAP_VEC.0 + vmm::page_offset(__return_to_user as usize);
         __ret = unsafe { core::mem::transmute(return_to_user as *const ()) };
     }
 
-    w_stvec(USER_TRAP_VEC.0 + (user_trap_vec as usize & 0xfff));
-    println!(
-        "returning to user (VA: {:#010x} PA: {:#010x})\ntrapvec (VA: {:#010x}, PA: {:#010x})",
-        __ret as usize,
-        __return_to_user as usize,
-        crate::riscv::r_stvec(),
-        user_trap_vec as usize,
-    );
+    w_stvec(USER_TRAP_VEC.0 + vmm::page_offset(user_trap_vec as usize));
+    w_sstatus(r_sstatus() & !(SSTATUS_SPP) | SSTATUS_SPIE); // set user mode, enable interrupts in user mode
     __ret(satp);
 }

@@ -5,7 +5,7 @@ use core::{
 
 use crate::{
     trap::{return_to_user, USER_TRAP_VEC},
-    vmm::{Page, PageTable, PhysAddr, VirtAddr, PGSIZE, PTE_R, PTE_U, PTE_W, PTE_X},
+    vmm::{self, Page, PageTable, PhysAddr, VirtAddr, PGSIZE, PTE_R, PTE_U, PTE_W, PTE_X},
 };
 use alloc::{boxed::Box, vec::Vec};
 use servos::riscv::{disable_intr, r_satp, r_tp};
@@ -21,8 +21,10 @@ pub enum ProcStatus {
 #[repr(C, align(0x1000))]
 pub struct TrapFrame {
     pub regs: [usize; 32], // 0 is PC
-    pub satp: usize,
     pub hartid: usize,
+    pub ksatp: usize,
+    pub ksp: *const u8,
+    pub handle_trap: extern "C" fn(sepc: usize) -> !,
 }
 
 impl Index<Reg> for TrapFrame {
@@ -73,9 +75,10 @@ impl Process {
             return None;
         }
 
-        trapframe[Reg::PC] = ENTRY_ADDR + (func.0 & 0xfff);
+        trapframe[Reg::PC] = ENTRY_ADDR + vmm::page_offset(func);
         trapframe[Reg::SP] = STACK_ADDR + PGSIZE;
-        trapframe.satp = r_satp();
+        trapframe.ksatp = r_satp();
+        trapframe.handle_trap = handle_u_trap;
 
         let mut data = Vec::try_with_capacity(1).ok()?;
         data.push(stack);
@@ -96,6 +99,12 @@ impl Process {
         unsafe {
             let satp = PageTable::make_satp(&*self.pagetable);
             (*self.trapframe).hartid = r_tp();
+            (*self.trapframe).ksp = crate::KSTACK
+                .0
+                .as_ptr()
+                .cast::<u8>()
+                .add(crate::HART_STACK_LEN);
+
             CURRENT_PROC = Some(self);
             return_to_user(token, satp)
         }
@@ -147,4 +156,13 @@ pub enum Reg {
     T4,
     T5,
     T6,
+}
+
+extern "C" fn handle_u_trap(sepc: usize) -> ! {
+    let _token = disable_intr();
+    unsafe {
+        let mut proc = CURRENT_PROC.take().unwrap();
+        (*proc.trapframe)[Reg::PC] = crate::trap::handle_trap(sepc, Some(&mut proc));
+        proc.return_into();
+    }
 }

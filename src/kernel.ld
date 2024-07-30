@@ -13,9 +13,8 @@ PHDRS {
 
 SECTIONS {
   . = ORIGIN(ram);
-  PROVIDE(_text_start = .);     # ORIGIN is already page aligned
-
   .text : {
+    PROVIDE(_text_start = .);   # ORIGIN is already page aligned
     *(.text.init)               # ensure _start is loaded at ORIGIN
     *(.text)
 

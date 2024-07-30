@@ -31,7 +31,7 @@ use servos::{
     Align16,
 };
 use uart::{DebugIo, CONS};
-use vmm::{PageTable, VirtAddr, PGSIZE, PTE_R, PTE_W, PTE_X};
+use vmm::{PageTable, PGSIZE, PTE_R, PTE_W, PTE_X};
 
 mod config;
 mod dump_fdt;
@@ -223,52 +223,36 @@ unsafe fn init_plic(dt: &DevTree, uart_plic_irq: Option<u32>) -> bool {
 }
 
 unsafe fn init_vmem(syscon: Option<&Syscon>) {
+    let pt = unsafe { &mut *addr_of_mut!(KPAGETABLE) };
     unsafe {
-        let pt = &mut *addr_of_mut!(KPAGETABLE);
         assert!(pt.map_identity(addr_of!(_text_start), addr_of!(_text_end), PTE_R | PTE_X));
         assert!(pt.map_identity(addr_of!(_rodata_start), addr_of!(_rodata_end), PTE_R));
         assert!(pt.map_identity(addr_of!(_data_start), addr_of!(_bss_end), PTE_R | PTE_W));
 
-        // TODO: might be worth adding support for mega/gigapages to save some space on page tables
-        let Range { start, end } = ALLOCATOR.lock().range();
-        assert!(pt.map_identity(start, end, PTE_R | PTE_W));
-        assert!(pt.map_identity(PLIC.addr(), PLIC.addr(), PTE_R | PTE_W));
-        let uart_addr = match &*CONS.lock() {
-            DebugIo::Ns16550a(uart) => Some(uart.addr()),
-            DebugIo::Sbi(_) => None,
-        };
-        if let Some(uart_addr) = uart_addr {
-            assert!(pt.map_identity(uart_addr, uart_addr, PTE_R | PTE_W));
-        }
-        if let Some(syscon) = syscon.map(|syscon| syscon.addr()) {
-            assert!(pt.map_identity(syscon, syscon, PTE_R | PTE_W));
-        }
-
-        // the trap vector and return to user code must be mapped in the same place for the kernel
-        // and user programs, or it would cause a page fault as soon as the page table switched
-        // when entering/exiting user mode
-        assert!(trap::map_trap_code(pt));
+        assert!(pt.map_identity(PLIC.addr(), PLIC.addr().add(0x3ff_fffc), PTE_R | PTE_W));
     }
+
+    // TODO: might be worth adding support for mega/gigapages to save some space on page tables
+    let Range { start, end } = ALLOCATOR.lock().range();
+    assert!(pt.map_identity(start, end, PTE_R | PTE_W));
+    let uart_addr = match &*CONS.lock() {
+        DebugIo::Ns16550a(uart) => Some(uart.addr()),
+        DebugIo::Sbi(_) => None,
+    };
+    if let Some(uart_addr) = uart_addr {
+        assert!(pt.map_identity(uart_addr, uart_addr, PTE_R | PTE_W));
+    }
+    if let Some(syscon) = syscon.map(|syscon| syscon.addr()) {
+        assert!(pt.map_identity(syscon, syscon, PTE_R | PTE_W));
+    }
+
+    // the trap vector and return to user code must be mapped in the same place for the kernel
+    // and user programs, or it would cause a page fault as soon as the page table switched
+    // when entering/exiting user mode
+    assert!(trap::map_trap_code(pt));
 }
 
 unsafe fn init_hart(uart_plic_irq: Option<u32>) {
-    unsafe {
-        println!(
-            "MAGIC TRANSLATED TO PHYS: {:?} CURRENT FN: {:?} UNMAPPED: {:?}",
-            trap::USER_TRAP_VEC
-                .to_phys(&*addr_of!(KPAGETABLE))
-                .unwrap_or(vmm::PhysAddr(0))
-                .0 as *const u8,
-            VirtAddr(init_hart as usize)
-                .to_phys(&*addr_of!(KPAGETABLE))
-                .unwrap_or(vmm::PhysAddr(0))
-                .0 as *const u8,
-            VirtAddr(0x90000000)
-                .to_phys(&*addr_of!(KPAGETABLE))
-                .unwrap_or(vmm::PhysAddr(0))
-                .0 as *const u8,
-        );
-    }
     // enable virtual memory
     sfence_vma();
     w_satp(PageTable::make_satp(unsafe { addr_of!(KPAGETABLE) }));
@@ -324,18 +308,9 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
 
         // dump_fdt::dump_tree(dt).unwrap();
 
-        println!("RANDOM BYTE: {}", *(0x8020_0000 as *const u8));
-        println!("MAGIC BYTE: {}", *(trap::USER_TRAP_VEC.0 as *const u8));
-
-        let proc = Process::from_function(init_user_mode).expect("couldn't create init process");
-        let trapframe = &*proc.trapframe;
-        println!(
-            "\naddress of fn: {:#010x}, pc: {:#010x} sp: {:#010x}",
-            init_user_mode as usize,
-            trapframe[Reg::PC],
-            trapframe[Reg::SP],
-        );
-        proc.return_into();
+        Process::from_function(init_user_mode)
+            .expect("couldn't create init process")
+            .return_into();
     }
 }
 
@@ -345,13 +320,12 @@ extern "C" fn init_user_mode() -> ! {
         core::arch::asm!(
             r"
             0:
-            li  t0, 10000000
-            li  t1, 0
+            li  a0, 1000000000
             1:
             addi a0, a0, -1
-            bne  t1, t0, 1b
+            bne  zero, a0, 1b
             ecall
-            j 0b
+            j    0b
             ",
             options(noreturn)
         )
