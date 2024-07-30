@@ -15,11 +15,12 @@ use core::{
     ptr::{addr_of, addr_of_mut},
 };
 
-use config::HART_STACK_LEN;
+use alloc::boxed::Box;
 use fdt_rs::{
     base::{DevTree, DevTreeNode},
     prelude::{FallibleIterator, PropReader},
 };
+use hart::{set_hart_info, HartInfo, HART_STACK_LEN, MAX_HARTS};
 use plic::PLIC;
 use proc::{Process, Scheduler};
 use servos::{
@@ -27,13 +28,14 @@ use servos::{
     heap::BlockAlloc,
     lock::SpinLocked,
     riscv::{self, disable_intr, halt, r_satp, sfence_vma, w_satp},
+    sbi::{self, hsm::HartState},
     Align16,
 };
 use uart::{DebugIo, CONS};
 use vmm::{PageTable, PGSIZE, PTE_R, PTE_RW, PTE_RX};
 
-mod config;
 mod dump_fdt;
+mod hart;
 mod plic;
 mod proc;
 mod trap;
@@ -73,7 +75,7 @@ fn on_panic(info: &core::panic::PanicInfo) -> ! {
 #[naked]
 #[no_mangle]
 #[link_section = ".text.init"]
-extern "C" fn _start() -> ! {
+extern "C" fn _start(_hartid: usize, _fdt: *const u8) -> ! {
     unsafe {
         core::arch::asm!(
             r"
@@ -86,12 +88,31 @@ extern "C" fn _start() -> ! {
             la      sp, {stack}
             li      t0, {stack_len}
             add     sp, sp, t0
-            mv      a2, sp
             tail    {init}",
 
             init = sym kmain,
             stack = sym KSTACK,
             stack_len = const HART_STACK_LEN,
+            options(noreturn),
+        );
+    }
+}
+
+#[naked]
+extern "C" fn _start_hart(_hartid: usize, _sp: usize) {
+    unsafe {
+        core::arch::asm!(
+            r"
+            .option push
+            .option norelax
+            la      gp, _global_pointer
+            .option pop
+
+            mv      tp, a0
+            mv      sp, a1
+            tail    {init}",
+
+            init = sym kinithart,
             options(noreturn),
         );
     }
@@ -208,7 +229,7 @@ unsafe fn init_plic(dt: &DevTree, uart_plic_irq: Option<u32>) -> bool {
 
     println!("PLIC found at address {:?}", base as *mut u8);
     unsafe {
-        PLIC.init(base as *mut _);
+        PLIC.init(base as *mut _, uart_plic_irq);
     }
 
     if let Some(uart_plic_irq) = uart_plic_irq {
@@ -251,7 +272,9 @@ unsafe fn init_vmem(syscon: Option<&Syscon>) {
     assert!(trap::map_trap_code(pt));
 }
 
-unsafe fn init_hart(uart_plic_irq: Option<u32>) {
+unsafe fn init_hart(sp: usize) {
+    set_hart_info(HartInfo { sp });
+
     // enable virtual memory
     sfence_vma();
     w_satp(PageTable::make_satp(unsafe { addr_of!(KPAGETABLE) }));
@@ -259,8 +282,8 @@ unsafe fn init_hart(uart_plic_irq: Option<u32>) {
 
     // ask for PLIC interrupts
     PLIC.set_hart_priority_threshold(0);
-    if let Some(uart_plic_irq) = uart_plic_irq {
-        PLIC.hart_enable(uart_plic_irq);
+    if let Some(irq) = PLIC.get_uart0() {
+        PLIC.hart_enable(irq.into());
     }
 
     // enable traps and install the trap handler
@@ -277,7 +300,6 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
             println!("No Ns16550a node found in the device tree. Defaulting to SBI for I/O.");
         }
 
-        trap::init_context(uart_plic_irq);
         if !init_plic(&dt, uart_plic_irq) {
             panic!("No PLIC node found in the device tree.");
         }
@@ -299,7 +321,7 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
         // invalidated once we initialize the heap over it
         init_heap(&dt);
         init_vmem(syscon.as_ref());
-        init_hart(uart_plic_irq);
+        init_hart(addr_of!(KSTACK) as usize + HART_STACK_LEN);
         println!(
             "Initialized kernel page table, satp: {:?}",
             r_satp() as *const u8
@@ -307,14 +329,36 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
 
         // dump_fdt::dump_tree(dt).unwrap();
 
-        Process::spawn_from_function(init_user_mode).expect("couldn't create process 0");
-        Process::spawn_from_function(init_user_mode).expect("couldn't create process 1");
-        Process::spawn_from_function(init_user_mode).expect("couldn't create process 2");
-
-        loop {
-            Scheduler::try_find_execute();
+        for _ in 0..5 {
+            Process::spawn_from_function(init_user_mode).expect("couldn't create process");
         }
+
+        // TODO: maybe look in the device tree for hart count
+        for hartid in 0..MAX_HARTS {
+            // TODO: make sure this hart is M + S + U mode capable
+            let Ok(HartState::Stopped) = sbi::hsm::hart_get_status(hartid) else {
+                continue;
+            };
+
+            // TODO: kernel stack guard pages
+            let stack = Box::leak(Box::<Align16<[u8; HART_STACK_LEN]>>::new_uninit());
+            let stack = stack as *mut _ as usize + HART_STACK_LEN;
+            if let Err(err) = sbi::hsm::hart_start(hartid, _start_hart, stack) {
+                panic!("failed to start hart {hartid}: {err:?}");
+            }
+        }
+
+        Scheduler::yield_hart()
     }
+}
+
+extern "C" fn kinithart(hartid: usize, sp: usize) -> ! {
+    println!("Hello world from hart {hartid}: sp: {sp:#010x}");
+    unsafe {
+        init_hart(sp);
+    }
+
+    Scheduler::yield_hart()
 }
 
 #[naked]

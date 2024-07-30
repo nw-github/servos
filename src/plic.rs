@@ -1,6 +1,9 @@
 use core::{cell::UnsafeCell, num::NonZeroU32};
 
-pub struct Plic(UnsafeCell<*mut u8>);
+pub struct Plic {
+    addr: UnsafeCell<*mut u8>,
+    uart0: UnsafeCell<Option<NonZeroU32>>,
+}
 
 unsafe impl Sync for Plic {}
 
@@ -15,7 +18,10 @@ const COMPLETION_BASE: usize = CLAIM_BASE;
 
 impl Plic {
     pub const fn new() -> Self {
-        Self(UnsafeCell::new(core::ptr::null_mut()))
+        Self {
+            addr: UnsafeCell::new(core::ptr::null_mut()),
+            uart0: UnsafeCell::new(None),
+        }
     }
 
     /// Creates a new [`Plic`].
@@ -24,9 +30,10 @@ impl Plic {
     ///
     /// `addr` must be the address of a standard-compliant RISC-V PLIC. No other harts must be
     /// started yet, and no other PLIC functions should be called before this.
-    pub unsafe fn init(&self, addr: *mut u8) {
+    pub unsafe fn init(&self, addr: *mut u8, uart0: Option<u32>) {
         unsafe {
-            *self.0.get() = addr;
+            *self.addr.get() = addr;
+            *self.uart0.get() = uart0.and_then(NonZeroU32::new);
         }
     }
 
@@ -61,7 +68,11 @@ impl Plic {
     }
 
     pub fn addr(&self) -> *mut u8 {
-        unsafe { *self.0.get() }
+        unsafe { *self.addr.get() }
+    }
+
+    pub fn get_uart0(&self) -> Option<NonZeroU32> {
+        unsafe { *self.uart0.get() }
     }
 
     fn hart_complete(&self, irq: u32) {
@@ -71,7 +82,7 @@ impl Plic {
     fn u32(&self, byte_offset: usize) -> *mut u32 {
         debug_assert!(byte_offset & 0b11 == 0);
 
-        let ptr = unsafe { *self.0.get() };
+        let ptr = unsafe { *self.addr.get() };
         assert!(!ptr.is_null());
         unsafe { ptr.add(byte_offset).cast() }
     }
@@ -88,6 +99,10 @@ pub struct Irq(Option<NonZeroU32>);
 impl Irq {
     pub fn value(&self) -> Option<&NonZeroU32> {
         self.0.as_ref()
+    }
+
+    pub fn is_uart0(&self) -> bool {
+        unsafe { (*PLIC.uart0.get()).zip(self.0).is_some_and(|(a, b)| a == b) }
     }
 }
 

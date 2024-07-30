@@ -1,15 +1,12 @@
-use core::num::NonZeroU32;
-
-use alloc::boxed::Box;
 use servos::{
-    riscv::{r_sstatus, w_sstatus, SSTATUS_SPIE, SSTATUS_SPP},
+    riscv::{r_sstatus, r_tp, w_sstatus, SSTATUS_SPIE, SSTATUS_SPP},
     sbi,
 };
 
 use crate::{
     plic::PLIC,
     print, println,
-    proc::{Process, ProcessNode, Reg, Scheduler, PROC_LIST, USER_TRAP_FRAME},
+    proc::{Process, ProcessNode, Reg, Scheduler, USER_TRAP_FRAME},
     riscv::{
         enable_intr, r_scause, r_time, w_sie, w_stvec, InterruptToken, SIE_SEIE, SIE_SSIE, SIE_STIE,
     },
@@ -18,12 +15,6 @@ use crate::{
 };
 
 const INTERRUPT_FLAG_BIT: usize = 1 << (usize::BITS - 1);
-
-struct TrapContext {
-    uart_irq: Option<NonZeroU32>,
-}
-
-static mut TRAP_CONTEXT: TrapContext = TrapContext { uart_irq: None };
 
 #[repr(usize)]
 #[derive(strum::FromRepr, Debug)]
@@ -204,8 +195,9 @@ extern "riscv-interrupt-s" fn sv_trap_vec() {
 pub extern "C" fn handle_u_trap(mut sepc: usize, mut proc: ProcessNode) -> ! {
     let mut must_yield = false;
     print!(
-        "Trap from process with PID {}: ",
-        unsafe { proc.as_mut() }.lock().pid
+        "Trap from process with PID {} on hart {}: ",
+        unsafe { proc.as_mut() }.lock().pid,
+        r_tp(),
     );
     match TrapCause::current() {
         Ok(TrapCause::ExternalIntr) => handle_external_intr(),
@@ -238,19 +230,9 @@ pub extern "C" fn handle_u_trap(mut sepc: usize, mut proc: ProcessNode) -> ! {
             Process::destroy(proc, plocked);
             /* OOM */
         }
-
-        enable_intr();
     }
 
-    loop {
-        Scheduler::try_find_execute()
-    }
-}
-
-pub unsafe fn init_context(uart_irq: Option<u32>) {
-    unsafe {
-        TRAP_CONTEXT.uart_irq = uart_irq.and_then(NonZeroU32::new);
-    }
+    Scheduler::yield_hart()
 }
 
 pub fn hart_install() {
@@ -289,11 +271,10 @@ pub fn return_to_user(_token: InterruptToken, satp: usize) -> ! {
 fn handle_external_intr() {
     let irq = PLIC.hart_claim();
     let Some(num) = irq.value() else {
-        println!("PLIC interrupt with null irq");
         return;
     };
 
-    if unsafe { TRAP_CONTEXT.uart_irq.as_ref() }.is_some_and(|v| v == num) {
+    if irq.is_uart0() {
         let ch = CONS.lock().read().unwrap();
         println!("UART interrupt: {ch:#04x} ({})", ch as char);
     } else {

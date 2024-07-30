@@ -25,7 +25,6 @@ pub const PTE_D: u64 = 1 << 7;
 pub const PTE_OWNED: u64 = 1 << 8;
 pub const PTE_RSW1: u64 = 1 << 9;
 
-pub const PTE_RWX: u64 = PTE_R | PTE_W | PTE_X;
 pub const PTE_RX: u64 = PTE_R | PTE_X;
 pub const PTE_RW: u64 = PTE_R | PTE_W;
 

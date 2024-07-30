@@ -5,13 +5,14 @@ use core::{
 };
 
 use crate::{
+    hart::get_hart_info,
     trap::{self, USER_TRAP_VEC},
     vmm::{self, Page, PageTable, PhysAddr, VirtAddr, PGSIZE, PTE_OWNED, PTE_RW, PTE_RX, PTE_U},
 };
 use alloc::{boxed::Box, collections::VecDeque};
 use servos::{
     lock::{Guard, SpinLocked},
-    riscv::{r_satp, r_tp},
+    riscv::{enable_intr, r_satp, r_tp},
 };
 
 static NEXTPID: AtomicU32 = AtomicU32::new(0);
@@ -155,12 +156,7 @@ impl Process {
         unsafe {
             let satp = PageTable::make_satp(&*this.pagetable);
             (*this.trapframe).hartid = r_tp();
-            // TODO: fix this
-            (*this.trapframe).ksp = crate::KSTACK
-                .0
-                .as_ptr()
-                .cast::<u8>()
-                .add(crate::HART_STACK_LEN);
+            (*this.trapframe).ksp = get_hart_info().sp as *const u8;
             trap::return_to_user(Guard::drop_and_keep_token(this), satp)
         }
     }
@@ -217,6 +213,13 @@ impl Scheduler {
 
     pub fn take(proc: ProcessNode) -> bool {
         try_push_back(&mut SCHEDULER.lock().awaiting, proc)
+    }
+
+    pub fn yield_hart() -> ! {
+        unsafe { enable_intr() };
+        loop {
+            Self::try_find_execute();
+        }
     }
 }
 
