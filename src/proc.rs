@@ -84,7 +84,26 @@ impl IndexMut<Reg> for TrapFrame {
     }
 }
 
-pub type ProcessNode = NonNull<SpinLocked<Process>>;
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ProcessNode(pub NonNull<SpinLocked<Process>>);
+
+impl ProcessNode {
+    pub unsafe fn with<T>(self, f: impl FnOnce(Guard<Process>) -> T) -> T {
+        f(unsafe { self.0.as_ref() }.lock())
+    }
+
+    /// # Safety
+    /// The process must not be awaiting scheduling or running on any hart.
+    pub unsafe fn destroy(self, lock: Guard<Process>) {
+        let mut list = PROC_LIST.lock();
+        if let Some(i) = list.iter().position(|&rhs| rhs == self) {
+            list.swap_remove_back(i);
+        }
+        drop(lock);
+        drop(unsafe { Box::from_raw(self.0.as_ptr()) });
+    }
+}
 
 pub struct Process {
     pub pid: u32,
@@ -121,7 +140,7 @@ impl Process {
         }
 
         let proc = unsafe {
-            NonNull::new_unchecked(Box::into_raw(
+            ProcessNode(NonNull::new_unchecked(Box::into_raw(
                 Box::try_new(SpinLocked::new(Process {
                     pid: NEXTPID.fetch_add(1, Ordering::SeqCst),
                     pagetable: pt,
@@ -130,7 +149,7 @@ impl Process {
                     killed: false,
                 }))
                 .ok()?,
-            ))
+            )))
         };
         unsafe {
             (*trapframe).proc = proc;
@@ -138,11 +157,11 @@ impl Process {
 
         let mut proc_list = PROC_LIST.lock();
         if !try_push_back(&mut proc_list, proc) {
-            drop(unsafe { Box::from_raw(proc.as_ptr()) });
+            drop(unsafe { Box::from_raw(proc.0.as_ptr()) });
             return None;
         } else if !Scheduler::take(proc) {
             proc_list.pop_back();
-            drop(unsafe { Box::from_raw(proc.as_ptr()) });
+            drop(unsafe { Box::from_raw(proc.0.as_ptr()) });
             return None;
         }
         Some(())
@@ -156,20 +175,6 @@ impl Process {
             (*this.trapframe).ksp = get_hart_info().sp as *const u8;
             trap::return_to_user(Guard::drop_and_keep_token(this), satp)
         }
-    }
-
-    /// # Safety
-    /// The process must not be awaiting scheduling or running on any hart.
-    pub unsafe fn destroy(addr: ProcessNode, lock: Guard<Process>) {
-        let mut list = PROC_LIST.lock();
-        if let Some(i) = list
-            .iter()
-            .position(|rhs| lock.pid == unsafe { rhs.as_ref() }.lock().pid)
-        {
-            list.swap_remove_back(i);
-        }
-
-        drop(unsafe { Box::from_raw(addr.as_ptr()) });
     }
 }
 
@@ -196,7 +201,7 @@ impl Scheduler {
 
     pub fn try_find_execute() {
         // can't use if/let or we will hold the scheduler lock forever and deadlock
-        let Some(mut next) = SCHEDULER
+        let Some(next) = SCHEDULER
             .try_lock()
             .and_then(|mut s| s.awaiting.pop_front())
         else {
@@ -204,7 +209,7 @@ impl Scheduler {
         };
 
         unsafe {
-            Process::return_into(next.as_mut().lock());
+            next.with(|proc| Process::return_into(proc));
         }
     }
 

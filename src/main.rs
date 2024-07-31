@@ -38,6 +38,7 @@ mod dump_fdt;
 mod hart;
 mod plic;
 mod proc;
+mod sys;
 mod trap;
 mod uart;
 mod vmm;
@@ -369,11 +370,20 @@ extern "C" fn init_user_mode() -> ! {
         core::arch::asm!(
             r"
             0:
-            li  a0, 1000000000
+            li  a0, 100000000
+
             1:
             addi a0, a0, -1
             bne  zero, a0, 1b
+            li   a7, 100
             ecall
+
+            li   a7, 3          # Sys::GetPid
+            ecall               # a0 holds pid
+
+            li   a7, 2          # Sys::Kill
+            ecall
+
             j    0b
             ",
             options(noreturn)

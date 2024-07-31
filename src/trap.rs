@@ -10,6 +10,7 @@ use crate::{
     riscv::{
         enable_intr, r_scause, r_time, w_sie, w_stvec, InterruptToken, SIE_SEIE, SIE_SSIE, SIE_STIE,
     },
+    sys,
     uart::CONS,
     vmm::{self, PageTable, Pte, VirtAddr, PGSIZE},
 };
@@ -51,6 +52,7 @@ impl TrapCause {
 }
 
 pub const USER_TRAP_VEC: VirtAddr = VirtAddr(VirtAddr::MAX.0 - PGSIZE);
+pub const TIMER_INTERVAL: usize = 10_000_000;
 
 #[naked]
 #[link_section = ".text.trap"]
@@ -185,40 +187,41 @@ extern "riscv-interrupt-s" fn sv_trap_vec() {
         Ok(TrapCause::ExternalIntr) => handle_external_intr(),
         Ok(TrapCause::TimerIntr) => {
             println!("Timer!");
-            _ = sbi::timer::set_timer(r_time() + 10_000_000);
+            _ = sbi::timer::set_timer(r_time() + TIMER_INTERVAL);
         }
         Ok(ex) => panic!("Unhandled trap: {ex:?}"),
         Err(cause) => panic!("Unhandled trap: unknown {cause:#x}"),
     }
 }
 
-pub extern "C" fn handle_u_trap(mut sepc: usize, mut proc: ProcessNode) -> ! {
+pub extern "C" fn handle_u_trap(mut sepc: usize, proc: ProcessNode) -> ! {
+    w_stvec(sv_trap_vec as usize);
+
     let mut must_yield = false;
     match TrapCause::current() {
         Ok(TrapCause::ExternalIntr) => handle_external_intr(),
         Ok(TrapCause::TimerIntr) => {
             println!(
                 "Trap from process with PID {} on hart {}: Timer!",
-                unsafe { proc.as_mut() }.lock().pid,
+                unsafe { proc.with(|p| p.pid) },
                 r_tp(),
             );
-            _ = sbi::timer::set_timer(r_time() + 10_000_000);
+            _ = sbi::timer::set_timer(r_time() + TIMER_INTERVAL);
             must_yield = true;
         }
         Ok(TrapCause::EcallFromUMode) => {
-            println!(
-                "Trap from process with PID {} on hart {}: ecall",
-                unsafe { proc.as_mut() }.lock().pid,
-                r_tp(),
-            );
+            sys::handle_syscall(proc);
             sepc += 4;
         }
         Ok(unk) => {
-            let mut proc = unsafe { proc.as_mut() }.lock();
-            proc.killed = true;
+            let pid = unsafe {
+                proc.with(|mut proc| {
+                    proc.killed = true;
+                    proc.pid
+                })
+            };
             println!(
-                "ETrap from process with PID {} on hart {}: exception {unk:?} raised, killing process",
-                proc.pid,
+                "ETrap from process with PID {pid} on hart {}: exception {unk:?} raised, killing process",
                 r_tp(),
             );
         }
@@ -226,17 +229,18 @@ pub extern "C" fn handle_u_trap(mut sepc: usize, mut proc: ProcessNode) -> ! {
     }
 
     unsafe {
-        let mut plocked = proc.as_mut().lock();
-        (*plocked.trapframe)[Reg::PC] = sepc;
-        if plocked.killed {
-            Process::destroy(proc, plocked);
-        } else if !must_yield {
-            Process::return_into(plocked);
-        } else if !Scheduler::take(proc) {
-            println!("Scheduler::take failed for PID {}, OOM!", plocked.pid);
-            Process::destroy(proc, plocked);
-            /* OOM */
-        }
+        proc.with(move |mut p| {
+            (*p.trapframe)[Reg::PC] = sepc;
+            if p.killed {
+                proc.destroy(p); // proc is invalidated here
+            } else if !must_yield {
+                Process::return_into(p);
+            } else if !Scheduler::take(proc) {
+                println!("Scheduler::take failed for PID {}, OOM!", p.pid);
+                proc.destroy(p);
+                /* OOM */
+            }
+        })
     }
 
     Scheduler::yield_hart()
@@ -247,7 +251,7 @@ pub fn hart_install() {
     w_sie(SIE_SEIE | SIE_STIE | SIE_SSIE);
     unsafe { enable_intr() };
 
-    sbi::timer::set_timer(r_time() + 10_000_000).expect("SBI Timer support is not present");
+    sbi::timer::set_timer(r_time() + TIMER_INTERVAL).expect("SBI Timer support is not present");
 }
 
 pub fn map_trap_code(pt: &mut PageTable) -> bool {
