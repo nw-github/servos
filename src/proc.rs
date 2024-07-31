@@ -7,7 +7,7 @@ use core::{
 use crate::{
     hart::get_hart_info,
     trap::{self, USER_TRAP_VEC},
-    vmm::{self, Page, PageTable, PhysAddr, VirtAddr, PGSIZE, PTE_OWNED, PTE_RW, PTE_RX, PTE_U},
+    vmm::{self, Page, PageTable, PhysAddr, Pte, VirtAddr, PGSIZE},
 };
 use alloc::{boxed::Box, collections::VecDeque};
 use servos::{
@@ -104,31 +104,28 @@ impl Process {
 
         let func = PhysAddr(func as usize);
         let mut pt = PageTable::try_alloc()?;
-        let stack = Box::into_raw(Page::alloc()?) as usize;
-        let mut trapframe = Box::<TrapFrame>::try_new_zeroed()
-            .map(|v| unsafe { v.assume_init() })
-            .ok()?;
-
-        let trapframe_p = &mut *trapframe as *mut TrapFrame;
-        #[rustfmt::skip]
-        if !trap::map_trap_code(&mut pt)
-            || !pt.map_page(trapframe_p.into(), USER_TRAP_FRAME, PTE_RW | PTE_OWNED)
-            || !pt.map_page(func, VirtAddr(ENTRY_ADDR), PTE_RX | PTE_U)
-            || !pt.map_page(stack.into(), VirtAddr(STACK_ADDR), PTE_RW | PTE_U | PTE_OWNED)
-        {
-            return None;
-        }
-
+        let [stack, mut trapframe_page] = [Page::alloc()?, Page::alloc()?];
+        let trapframe = unsafe { trapframe_page.cast::<TrapFrame>() };
         trapframe[Reg::PC] = ENTRY_ADDR + vmm::page_offset(func);
         trapframe[Reg::SP] = STACK_ADDR + PGSIZE;
         trapframe.ksatp = r_satp();
         trapframe.handle_trap = trap::handle_u_trap;
+
+        let trapframe = trapframe as *mut TrapFrame;
+        if !trap::map_trap_code(&mut pt)
+            || !pt.map_owned_page(trapframe_page, USER_TRAP_FRAME, Pte::Rw)
+            || !pt.map_page(func, VirtAddr(ENTRY_ADDR), Pte::Rx | Pte::U)
+            || !pt.map_owned_page(stack, VirtAddr(STACK_ADDR), Pte::Rw | Pte::U)
+        {
+            return None;
+        }
+
         let proc = unsafe {
             NonNull::new_unchecked(Box::into_raw(
                 Box::try_new(SpinLocked::new(Process {
                     pid: NEXTPID.fetch_add(1, Ordering::SeqCst),
                     pagetable: pt,
-                    trapframe: Box::into_raw(trapframe),
+                    trapframe,
                     status: ProcStatus::Idle,
                     killed: false,
                 }))
@@ -136,7 +133,7 @@ impl Process {
             ))
         };
         unsafe {
-            (*trapframe_p).proc = proc;
+            (*trapframe).proc = proc;
         }
 
         let mut proc_list = PROC_LIST.lock();

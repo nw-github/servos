@@ -5,13 +5,13 @@ use servos::{
 
 use crate::{
     plic::PLIC,
-    print, println,
+    println,
     proc::{Process, ProcessNode, Reg, Scheduler, USER_TRAP_FRAME},
     riscv::{
         enable_intr, r_scause, r_time, w_sie, w_stvec, InterruptToken, SIE_SEIE, SIE_SSIE, SIE_STIE,
     },
     uart::CONS,
-    vmm::{self, PageTable, VirtAddr, PGSIZE, PTE_RX},
+    vmm::{self, PageTable, Pte, VirtAddr, PGSIZE},
 };
 
 const INTERRUPT_FLAG_BIT: usize = 1 << (usize::BITS - 1);
@@ -194,26 +194,33 @@ extern "riscv-interrupt-s" fn sv_trap_vec() {
 
 pub extern "C" fn handle_u_trap(mut sepc: usize, mut proc: ProcessNode) -> ! {
     let mut must_yield = false;
-    print!(
-        "Trap from process with PID {} on hart {}: ",
-        unsafe { proc.as_mut() }.lock().pid,
-        r_tp(),
-    );
     match TrapCause::current() {
         Ok(TrapCause::ExternalIntr) => handle_external_intr(),
         Ok(TrapCause::TimerIntr) => {
-            println!("Timer!");
+            println!(
+                "Trap from process with PID {} on hart {}: Timer!",
+                unsafe { proc.as_mut() }.lock().pid,
+                r_tp(),
+            );
             _ = sbi::timer::set_timer(r_time() + 10_000_000);
             must_yield = true;
         }
         Ok(TrapCause::EcallFromUMode) => {
-            println!("ecall");
+            println!(
+                "Trap from process with PID {} on hart {}: ecall",
+                unsafe { proc.as_mut() }.lock().pid,
+                r_tp(),
+            );
             sepc += 4;
         }
         Ok(unk) => {
             let mut proc = unsafe { proc.as_mut() }.lock();
             proc.killed = true;
-            println!("Exception {unk:?} raised, killing process");
+            println!(
+                "ETrap from process with PID {} on hart {}: exception {unk:?} raised, killing process",
+                proc.pid,
+                r_tp(),
+            );
         }
         Err(cause) => panic!("Unhandled trap: no match for cause {cause:#x}"),
     }
@@ -247,7 +254,7 @@ pub fn map_trap_code(pt: &mut PageTable) -> bool {
     pt.map_page(
         vmm::page_number(user_trap_vec as usize).into(),
         USER_TRAP_VEC,
-        PTE_RX,
+        Pte::Rx,
     )
 }
 

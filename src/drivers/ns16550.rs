@@ -44,16 +44,16 @@ impl Ns16550a {
     ///
     /// # Safety
     /// The `base` address must be a valid memory-mapped Ns16550a compliant UART controller.
-    pub unsafe fn new(base: usize, _clock: u32) -> Ns16550a {
+    pub unsafe fn new(base: usize, clock_hz: u32, baud: u32) -> Ns16550a {
         unsafe {
             let this = Ns16550a {
                 base: NonNull::new_unchecked(base as *mut u8),
             };
 
-            // TODO: configure the divisor
-            // this.write_reg(Write::FCR, 1 << 7); // enable divisor latch access
-            // this.write_reg(Write::THR /* DLL */, v);
-            // this.write_reg(Write::IER /* DLM */, v);
+            let divisor = clock_hz.div_ceil(baud * 16) as u16;
+            this.write_reg(Write::FCR, 1 << 7); // enable divisor latch access
+            this.write_reg(Write::THR /* DLL */, (divisor & 0xff) as u8);
+            this.write_reg(Write::IER /* DLM */, (divisor >> 8) as u8);
 
             this.write_reg(Write::LCR, 0b011); // 8-bit data size, 1 stop bit, no parity, disable divisor latch
             this.write_reg(Write::FCR, 0b1); // enable FIFO
