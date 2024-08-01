@@ -183,6 +183,9 @@ extern "C" fn __return_to_user(satp: usize) -> ! {
 
 #[repr(align(4))]
 extern "riscv-interrupt-s" fn sv_trap_vec() {
+    // FIXME: if the kernel overruns its stack, it will cause a page fault that brings it to this
+    // routine. However, the first thing we do here (courtesy of the riscv-interrupt-s calling conv)
+    // is backup all registers on the stack, which will cause a double-fault in this case.
     match TrapCause::current() {
         Ok(TrapCause::ExternalIntr) => handle_external_intr(),
         Ok(TrapCause::TimerIntr) => {

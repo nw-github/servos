@@ -1,6 +1,6 @@
 use core::{
     ops::{Index, IndexMut},
-    ptr::NonNull,
+    ptr::{addr_of, NonNull},
     sync::atomic::{AtomicU32, Ordering},
 };
 
@@ -65,7 +65,7 @@ pub struct TrapFrame {
     pub regs: [usize; 32], // 0 is PC
     pub hartid: usize,
     pub ksatp: usize,
-    pub ksp: *const u8,
+    pub ksp: *mut u8,
     pub handle_trap: extern "C" fn(sepc: usize, proc: ProcessNode) -> !,
     pub proc: ProcessNode,
 }
@@ -132,7 +132,7 @@ impl Process {
         let trapframe = unsafe { trapframe_page.cast::<TrapFrame>() };
         trapframe[Reg::PC] = ENTRY_ADDR + vmm::page_offset(func);
         trapframe[Reg::SP] = STACK_ADDR + PGSIZE;
-        trapframe.ksatp = r_satp();
+        trapframe.ksatp = PageTable::make_satp(unsafe { addr_of!(crate::KPAGETABLE) });
         trapframe.handle_trap = trap::handle_u_trap;
 
         let trapframe = trapframe as *mut TrapFrame;
@@ -177,7 +177,7 @@ impl Process {
         unsafe {
             let satp = PageTable::make_satp(&*this.pagetable);
             (*this.trapframe).hartid = r_tp();
-            (*this.trapframe).ksp = get_hart_info().sp.0 as *const u8;
+            (*this.trapframe).ksp = get_hart_info().sp.0 as *mut u8;
             trap::return_to_user(Guard::drop_and_keep_token(this), satp)
         }
     }

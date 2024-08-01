@@ -10,6 +10,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use core::{
+    arch::asm,
     mem::MaybeUninit,
     ops::Range,
     ptr::{addr_of, addr_of_mut},
@@ -45,7 +46,7 @@ mod vmm;
 
 extern crate alloc;
 
-static mut KSTACK: Align16<MaybeUninit<[u8; HART_STACK_LEN]>> = Align16(MaybeUninit::uninit());
+static mut BOOT_STACK: Align16<MaybeUninit<[u8; HART_STACK_LEN]>> = Align16(MaybeUninit::uninit());
 
 #[global_allocator]
 static ALLOCATOR: SpinLocked<BlockAlloc> = SpinLocked::new(BlockAlloc::new());
@@ -73,7 +74,7 @@ fn on_panic(info: &core::panic::PanicInfo) -> ! {
 
     loop {
         unsafe {
-            core::arch::asm!("wfi");
+            asm!("wfi", options(nomem, nostack));
         }
     }
 }
@@ -83,7 +84,7 @@ fn on_panic(info: &core::panic::PanicInfo) -> ! {
 #[link_section = ".text.init"]
 extern "C" fn _start(_hartid: usize, _fdt: *const u8) -> ! {
     unsafe {
-        core::arch::asm!(
+        asm!(
             r"
             .option push
             .option norelax
@@ -97,7 +98,7 @@ extern "C" fn _start(_hartid: usize, _fdt: *const u8) -> ! {
             tail    {init}",
 
             init = sym kmain,
-            stack = sym KSTACK,
+            stack = sym BOOT_STACK,
             stack_len = const HART_STACK_LEN,
             options(noreturn),
         );
@@ -107,14 +108,14 @@ extern "C" fn _start(_hartid: usize, _fdt: *const u8) -> ! {
 #[naked]
 extern "C" fn _start_hart(_hartid: usize, _satp: usize) -> ! {
     unsafe {
-        core::arch::asm!(
+        asm!(
             r"
             .option push
             .option norelax
             la      gp, _global_pointer
             .option pop
 
-            # enable virtual memory, since sp will be a virtual address
+            # enable virtual memory first, since sp will be a virtual address
             sfence.vma zero, zero
             csrw    satp, a1
             sfence.vma zero, zero
@@ -310,7 +311,6 @@ unsafe fn init_harts() {
         }
 
         *state = HartInfo { sp: next_top };
-        println!("New stack at {next_top} for hart {i}");
 
         let bottom = next_top - HART_STACK_LEN;
         let stack = Box::leak(Box::<Align16<[u8; HART_STACK_LEN]>>::new_uninit()) as *mut _;
@@ -345,7 +345,7 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
 
         println!(
             "Boot hart: {hartid}. KSTACK: {:?} fdt: {fdt:?} satp: {:?}",
-            addr_of!(KSTACK),
+            addr_of!(BOOT_STACK),
             r_satp() as *const u8,
         );
 
@@ -360,11 +360,11 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
         init_vmem();
         init_harts();
 
-        // dump_fdt::dump_tree(dt).unwrap();
-
         for _ in 0..5 {
             Process::spawn_from_function(init_user_mode).expect("couldn't create process");
         }
+
+        // dump_fdt::dump_tree(dt).unwrap();
 
         _start_hart(hartid, PageTable::make_satp(addr_of!(KPAGETABLE)))
     }
@@ -386,9 +386,10 @@ extern "C" fn kinithart(hartid: usize) -> ! {
 }
 
 #[naked]
+#[repr(align(0x1000))]
 extern "C" fn init_user_mode() -> ! {
     unsafe {
-        core::arch::asm!(
+        asm!(
             r"
             0:
             li  a0, 100000000

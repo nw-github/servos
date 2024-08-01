@@ -1,4 +1,4 @@
-use core::marker::PhantomData;
+use core::{arch::asm, marker::PhantomData};
 
 pub const SIE_SEIE: usize = 1 << 9; // external
 pub const SIE_STIE: usize = 1 << 5; // timer
@@ -15,7 +15,13 @@ macro_rules! read_register {
             #[must_use]
             pub fn read() -> usize {
                 let val: usize;
-                unsafe { core::arch::asm!(concat!("csrr {val}, ", stringify!($name)), val = out(reg) val) };
+                unsafe {
+                    asm!(
+                        concat!("csrr {val}, ", stringify!($name)), 
+                        val = out(reg) val,
+                        options(nostack),
+                    )
+                };
                 val
             }
         });
@@ -27,7 +33,13 @@ macro_rules! status_reg_fns {
         concat_idents::concat_idents!(write = w_, $name {
             #[inline(always)]
             pub fn write(val: usize) {
-                unsafe { core::arch::asm!(concat!("csrw ", stringify!($name), ", {val}"), val = in(reg) val) };
+                unsafe {
+                    asm!(
+                        concat!("csrw ", stringify!($name), ", {val}"),
+                        val = in(reg) val,
+                        options(nostack),
+                    )
+                };
             }
         });
 
@@ -49,7 +61,7 @@ read_register!(time);
 #[inline(always)]
 pub fn r_tp() -> usize {
     let val: usize;
-    unsafe { core::arch::asm!("mv {val}, tp", val = out(reg) val) };
+    unsafe { asm!("mv {val}, tp", val = out(reg) val, options(nostack)) };
     val
 }
 
@@ -83,7 +95,7 @@ pub fn disable_intr() -> InterruptToken {
         enabled: r_sstatus() & SSTATUS_SIE != 0,
         _not_send_sync: PhantomData,
     };
-    unsafe { core::arch::asm!("csrc sstatus, {sie}", sie = const SSTATUS_SIE) };
+    unsafe { asm!("csrc sstatus, {sie}", sie = const SSTATUS_SIE) };
     token
 }
 
@@ -96,5 +108,5 @@ pub fn disable_intr() -> InterruptToken {
 /// impl on InterruptToken.
 #[inline(always)]
 pub unsafe fn enable_intr() {
-    unsafe { core::arch::asm!("csrs sstatus, {sie}", sie = const SSTATUS_SIE) };
+    unsafe { asm!("csrs sstatus, {sie}", sie = const SSTATUS_SIE) };
 }

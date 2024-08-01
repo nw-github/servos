@@ -223,11 +223,11 @@ impl PageTable {
 
 impl Drop for PageTable {
     fn drop(&mut self) {
-        for entry in self.0.into_iter() {
+        for &entry in self.0.iter() {
             match entry.next() {
                 PteLink::PageTable(pt) => drop(unsafe { Box::from_raw(pt) }),
                 PteLink::Leaf(page) if entry.is_owned() => {
-                    drop(unsafe { Box::from_raw(page as *mut Page) })
+                    drop(unsafe { Box::from_raw(page as *mut Page) });
                 }
                 _ => {}
             }
