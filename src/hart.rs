@@ -8,27 +8,29 @@ use servos::{
     },
 };
 
+use crate::vmm::{VirtAddr, PGSIZE};
+
 pub const MAX_HARTS: usize = 256;
-pub const HART_STACK_LEN: usize = 0x4000;
+pub const HART_STACK_LEN: usize = PGSIZE * 4;
 
 #[derive(Clone, Copy)]
 pub struct HartInfo {
     /// The TOP of the stack
-    pub sp: usize,
+    pub sp: VirtAddr,
 }
 
-static mut HART_STATE: [HartInfo; MAX_HARTS] = [HartInfo { sp: 0 }; MAX_HARTS];
+pub static mut HART_INFO: [HartInfo; MAX_HARTS] = [HartInfo { sp: VirtAddr(0) }; MAX_HARTS];
 
 pub static POWER: SpinLocked<PowerManagement> =
     SpinLocked::new(PowerManagement::Sbi(SbiPowerManagement));
 
 pub fn get_hart_info() -> HartInfo {
-    unsafe { HART_STATE[r_tp()] }
+    unsafe { HART_INFO[r_tp()] }
 }
 
 pub fn set_hart_info(info: HartInfo) {
     unsafe {
-        HART_STATE[r_tp()] = info;
+        HART_INFO[r_tp()] = info;
     }
 }
 

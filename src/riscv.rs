@@ -53,20 +53,6 @@ pub fn r_tp() -> usize {
     val
 }
 
-#[inline(always)]
-pub fn sfence_vma() {
-    unsafe { core::arch::asm!("sfence.vma zero, zero") };
-}
-
-#[inline(always)]
-pub fn halt() -> ! {
-    loop {
-        unsafe {
-            core::arch::asm!("wfi");
-        }
-    }
-}
-
 pub struct InterruptToken {
     enabled: bool,
     _not_send_sync: PhantomData<*mut ()>,

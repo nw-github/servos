@@ -96,12 +96,17 @@ impl ProcessNode {
     /// # Safety
     /// The process must not be awaiting scheduling or running on any hart.
     pub unsafe fn destroy(self, lock: Guard<Process>) {
+        let _token = Guard::forget_and_keep_token(lock);
         let mut list = PROC_LIST.lock();
         if let Some(i) = list.iter().position(|&rhs| rhs == self) {
             list.swap_remove_back(i);
         }
-        drop(lock);
-        drop(unsafe { Box::from_raw(self.0.as_ptr()) });
+        unsafe { self.free() };
+    }
+
+    unsafe fn free(self) {
+        let me = unsafe { Box::from_raw(self.0.as_ptr()) };
+        drop(me);
     }
 }
 
@@ -133,8 +138,8 @@ impl Process {
         let trapframe = trapframe as *mut TrapFrame;
         if !trap::map_trap_code(&mut pt)
             || !pt.map_owned_page(trapframe_page, USER_TRAP_FRAME, Pte::Rw)
-            || !pt.map_page(func, VirtAddr(ENTRY_ADDR), Pte::Rx | Pte::U)
-            || !pt.map_owned_page(stack, VirtAddr(STACK_ADDR), Pte::Rw | Pte::U)
+            || !pt.map_owned_page(stack, VirtAddr(STACK_ADDR), Pte::Urw)
+            || !pt.map_page(func, VirtAddr(ENTRY_ADDR), Pte::Urx)
         {
             return None;
         }
@@ -157,11 +162,11 @@ impl Process {
 
         let mut proc_list = PROC_LIST.lock();
         if !try_push_back(&mut proc_list, proc) {
-            drop(unsafe { Box::from_raw(proc.0.as_ptr()) });
+            unsafe { proc.free() };
             return None;
         } else if !Scheduler::take(proc) {
             proc_list.pop_back();
-            drop(unsafe { Box::from_raw(proc.0.as_ptr()) });
+            unsafe { proc.free() };
             return None;
         }
         Some(())
@@ -172,7 +177,7 @@ impl Process {
         unsafe {
             let satp = PageTable::make_satp(&*this.pagetable);
             (*this.trapframe).hartid = r_tp();
-            (*this.trapframe).ksp = get_hart_info().sp as *const u8;
+            (*this.trapframe).ksp = get_hart_info().sp.0 as *const u8;
             trap::return_to_user(Guard::drop_and_keep_token(this), satp)
         }
     }

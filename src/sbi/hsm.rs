@@ -23,7 +23,7 @@ pub const EXTENSION_ID: i32 = 0x48534D;
 
 pub fn hart_start(
     hartid: usize,
-    start_addr: extern "C" fn(hartid: usize, opaque: usize),
+    start_addr: extern "C" fn(hartid: usize, opaque: usize) -> !,
     opaque: usize,
 ) -> SbiResult<()> {
     sbicall_3(EXTENSION_ID, 0, hartid, start_addr as usize, opaque).into_result(|_| ())

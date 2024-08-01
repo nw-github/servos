@@ -142,8 +142,7 @@ impl PageTable {
     ///
     /// # Panics
     ///
-    /// If the virtual page is already mapped, any pte except the final one is a leaf entry, or the
-    /// virtual address is too large, this function will panic.
+    /// Panics if the virtual page is already mapped or the virtual address is too large.
     pub fn map_page(&mut self, pa: PhysAddr, va: VirtAddr, perms: Pte) -> bool {
         assert!(!(perms & Pte::Rwx).is_empty());
         self.map_page_raw(pa, va, perms & !Pte::Owned)
@@ -151,14 +150,14 @@ impl PageTable {
 
     /// Map all pages in the contiguous physical range `pa` to `pa + size` to the contiguous virtual
     /// range `va` to `va + size`. `pa` and `va` needn't be page aligned.
-    pub fn map_range(&mut self, pa: PhysAddr, mut va: VirtAddr, size: usize, perms: Pte) -> bool {
+    pub fn map_pages(&mut self, pa: PhysAddr, mut va: VirtAddr, size: usize, perms: Pte) -> bool {
         assert!(!(perms & Pte::Rwx).is_empty());
         assert!(size != 0);
         va.0 &= !(PGSIZE - 1);
 
         let [first, last] = [page_number(pa), page_number(pa.0 + size - 1)];
         for (i, page) in (first..=last).step_by(PGSIZE).enumerate() {
-            if !self.map_page(PhysAddr(page), VirtAddr(va.0 + i * PGSIZE), perms) {
+            if !self.map_page(PhysAddr(page), va + i * PGSIZE, perms) {
                 return false;
             }
         }
@@ -180,7 +179,7 @@ impl PageTable {
         } else {
             end.0 - start.0
         };
-        self.map_range(start, VirtAddr(start.0), size, perms)
+        self.map_pages(start, VirtAddr(start.0), size, perms)
     }
 
     pub fn make_satp(this: *const PageTable) -> usize {
@@ -207,8 +206,14 @@ impl PageTable {
         }
 
         let entry = &mut pt.0[va.vpn(0)];
-        if entry.is_valid() {
-            panic!("PageTable::map remap");
+        match entry.next() {
+            PteLink::Leaf(addr) => {
+                panic!("PageTable::map remapping virtual address {va} (was {addr:?})")
+            }
+            PteLink::PageTable(addr) => {
+                panic!("PageTable::map remapping virtual address {va} (was pagetable at {addr:?})")
+            }
+            PteLink::Invalid => {}
         }
         // the A and D bits can be treated as secondary R and W bits on some boards
         *entry = PageTableEntry::new(pa, (perms | Pte::D | Pte::A).bits());
@@ -218,10 +223,12 @@ impl PageTable {
 
 impl Drop for PageTable {
     fn drop(&mut self) {
-        for entry in self.0.into_iter().filter(|e| e.is_valid()) {
+        for entry in self.0.into_iter() {
             match entry.next() {
                 PteLink::PageTable(pt) => drop(unsafe { Box::from_raw(pt) }),
-                PteLink::Leaf(pt) => drop(unsafe { Box::from_raw(pt as *mut Page) }),
+                PteLink::Leaf(page) if entry.is_owned() => {
+                    drop(unsafe { Box::from_raw(page as *mut Page) })
+                }
                 _ => {}
             }
         }
@@ -263,6 +270,28 @@ impl VirtAddr {
     pub const fn vpn(self, vpn: usize) -> usize {
         debug_assert!(vpn < 3);
         (self.0 >> (12 + vpn * 9)) & 0x1ff
+    }
+}
+
+impl core::fmt::Display for VirtAddr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self.0 as *const u8)
+    }
+}
+
+impl core::ops::Add<usize> for VirtAddr {
+    type Output = VirtAddr;
+
+    fn add(self, rhs: usize) -> Self::Output {
+        VirtAddr(self.0 + rhs)
+    }
+}
+
+impl core::ops::Sub<usize> for VirtAddr {
+    type Output = VirtAddr;
+
+    fn sub(self, rhs: usize) -> Self::Output {
+        VirtAddr(self.0 - rhs)
     }
 }
 

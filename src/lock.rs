@@ -71,10 +71,16 @@ impl<'a, T> Guard<'a, T> {
         &this.token
     }
 
-    pub fn drop_and_keep_token(mut this: Guard<'a, T>) -> InterruptToken {
+    pub fn drop_and_keep_token(this: Guard<'a, T>) -> InterruptToken {
+        unsafe {
+            this.lock.unlock();
+            Guard::forget_and_keep_token(this)
+        }
+    }
+
+    pub fn forget_and_keep_token(mut this: Guard<'a, T>) -> InterruptToken {
         unsafe {
             let token = ManuallyDrop::take(&mut this.token);
-            this.lock.unlock();
             core::mem::forget(this);
             token
         }

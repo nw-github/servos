@@ -20,14 +20,14 @@ use fdt_rs::{
     base::{DevTree, DevTreeNode},
     prelude::{FallibleIterator, PropReader},
 };
-use hart::{set_hart_info, HartInfo, PowerManagement, HART_STACK_LEN, MAX_HARTS, POWER};
+use hart::{get_hart_info, HartInfo, PowerManagement, HART_INFO, HART_STACK_LEN, MAX_HARTS, POWER};
 use plic::PLIC;
-use proc::{Process, Scheduler};
+use proc::{Process, Scheduler, USER_TRAP_FRAME};
 use servos::{
     drivers::{Ns16550a, Syscon},
     heap::BlockAlloc,
     lock::SpinLocked,
-    riscv::{self, disable_intr, halt, r_satp, sfence_vma, w_satp},
+    riscv::{self, disable_intr, r_satp, r_tp},
     sbi::{self, hsm::HartState},
     Align16,
 };
@@ -70,7 +70,12 @@ extern "C" {
 fn on_panic(info: &core::panic::PanicInfo) -> ! {
     let _ = disable_intr();
     println!("[FATAL] panic: {info}");
-    halt()
+
+    loop {
+        unsafe {
+            core::arch::asm!("wfi");
+        }
+    }
 }
 
 #[naked]
@@ -100,7 +105,7 @@ extern "C" fn _start(_hartid: usize, _fdt: *const u8) -> ! {
 }
 
 #[naked]
-extern "C" fn _start_hart(_hartid: usize, _sp: usize) {
+extern "C" fn _start_hart(_hartid: usize, _satp: usize) -> ! {
     unsafe {
         core::arch::asm!(
             r"
@@ -109,9 +114,24 @@ extern "C" fn _start_hart(_hartid: usize, _sp: usize) {
             la      gp, _global_pointer
             .option pop
 
+            # enable virtual memory, since sp will be a virtual address
+            sfence.vma zero, zero
+            csrw    satp, a1
+            sfence.vma zero, zero
+
+            # read the address of this harts sp from HART_INFO
             mv      tp, a0
-            mv      sp, a1
+            la      t0, {hart_info}
+            li      t1, {hart_info_sz}
+            mul     t1, tp, t1
+            add     t0, t1, t0
+            ld      sp, {info_sp_offs}(t0)
+
             tail    {init}",
+
+            hart_info = sym HART_INFO,
+            hart_info_sz = const core::mem::size_of::<HartInfo>(),
+            info_sp_offs = const core::mem::offset_of!(HartInfo, sp),
 
             init = sym kinithart,
             options(noreturn),
@@ -277,22 +297,36 @@ unsafe fn init_vmem() {
     assert!(trap::map_trap_code(pt));
 }
 
-unsafe fn init_hart(sp: usize) {
-    set_hart_info(HartInfo { sp });
+unsafe fn init_harts() {
+    let mut next_top = USER_TRAP_FRAME - PGSIZE;
 
-    // enable virtual memory
-    sfence_vma();
-    w_satp(PageTable::make_satp(unsafe { addr_of!(KPAGETABLE) }));
-    sfence_vma();
+    let tp = r_tp();
+    let pt = unsafe { &mut *addr_of_mut!(KPAGETABLE) };
+    // TODO: maybe look in the device tree for hart count
+    for (i, state) in unsafe { HART_INFO.iter_mut().enumerate() } {
+        // TODO: make sure this hart is M + S + U mode capable
+        if i != tp && !matches!(sbi::hsm::hart_get_status(i), Ok(HartState::Stopped)) {
+            continue;
+        }
 
-    // ask for PLIC interrupts
-    PLIC.set_hart_priority_threshold(0);
-    if let Some(irq) = PLIC.get_uart0() {
-        PLIC.hart_enable(irq.into());
+        *state = HartInfo { sp: next_top };
+        println!("New stack at {next_top} for hart {i}");
+
+        let bottom = next_top - HART_STACK_LEN;
+        let stack = Box::leak(Box::<Align16<[u8; HART_STACK_LEN]>>::new_uninit()) as *mut _;
+        assert!(pt.map_pages((stack as usize).into(), bottom, HART_STACK_LEN, Pte::Rw));
+        // extra PGSIZE for guard page
+        next_top = bottom - PGSIZE;
     }
 
-    // enable traps and install the trap handler
-    trap::hart_install();
+    let satp = PageTable::make_satp(pt);
+    for hartid in 0..MAX_HARTS {
+        if matches!(sbi::hsm::hart_get_status(hartid), Ok(HartState::Stopped)) {
+            if let Err(err) = sbi::hsm::hart_start(hartid, _start_hart, satp) {
+                panic!("failed to start hart {hartid}: {err:?}");
+            }
+        }
+    }
 }
 
 extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
@@ -324,11 +358,7 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
         // invalidated once we initialize the heap over it
         init_heap(&dt);
         init_vmem();
-        init_hart(addr_of!(KSTACK) as usize + HART_STACK_LEN);
-        println!(
-            "Initialized kernel page table, satp: {:?}",
-            r_satp() as *const u8
-        );
+        init_harts();
 
         // dump_fdt::dump_tree(dt).unwrap();
 
@@ -336,30 +366,21 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
             Process::spawn_from_function(init_user_mode).expect("couldn't create process");
         }
 
-        // TODO: maybe look in the device tree for hart count
-        for hartid in 0..MAX_HARTS {
-            // TODO: make sure this hart is M + S + U mode capable
-            let Ok(HartState::Stopped) = sbi::hsm::hart_get_status(hartid) else {
-                continue;
-            };
-
-            // TODO: kernel stack guard pages
-            let stack = Box::leak(Box::<Align16<[u8; HART_STACK_LEN]>>::new_uninit());
-            let stack = stack as *mut _ as usize + HART_STACK_LEN;
-            if let Err(err) = sbi::hsm::hart_start(hartid, _start_hart, stack) {
-                panic!("failed to start hart {hartid}: {err:?}");
-            }
-        }
-
-        Scheduler::yield_hart()
+        _start_hart(hartid, PageTable::make_satp(addr_of!(KPAGETABLE)))
     }
 }
 
-extern "C" fn kinithart(hartid: usize, sp: usize) -> ! {
-    println!("Hello world from hart {hartid}: sp: {sp:#010x}");
-    unsafe {
-        init_hart(sp);
+extern "C" fn kinithart(hartid: usize) -> ! {
+    println!("Hello world from hart {hartid}: sp: {}", get_hart_info().sp);
+
+    // ask for PLIC interrupts
+    PLIC.set_hart_priority_threshold(0);
+    if let Some(irq) = PLIC.get_uart0() {
+        PLIC.hart_enable(irq.into());
     }
+
+    // enable traps and install the trap handler
+    trap::hart_install();
 
     Scheduler::yield_hart()
 }
