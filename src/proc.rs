@@ -12,7 +12,7 @@ use crate::{
 use alloc::{boxed::Box, collections::VecDeque};
 use servos::{
     lock::{Guard, SpinLocked},
-    riscv::{enable_intr, r_satp, r_tp},
+    riscv::{enable_intr, r_tp},
 };
 
 static NEXTPID: AtomicU32 = AtomicU32::new(0);
@@ -128,48 +128,50 @@ impl Process {
 
         let func = PhysAddr(func as usize);
         let mut pt = PageTable::try_alloc()?;
-        let [stack, mut trapframe_page] = [Page::alloc()?, Page::alloc()?];
-        let trapframe = unsafe { trapframe_page.cast::<TrapFrame>() };
-        trapframe[Reg::PC] = ENTRY_ADDR + vmm::page_offset(func);
-        trapframe[Reg::SP] = STACK_ADDR + PGSIZE;
-        trapframe.ksatp = PageTable::make_satp(unsafe { addr_of!(crate::KPAGETABLE) });
-        trapframe.handle_trap = trap::handle_u_trap;
-
-        let trapframe = trapframe as *mut TrapFrame;
+        let mut trapframe_page = Page::alloc()?;
+        let trapframe = &mut *trapframe_page as *mut _ as *mut TrapFrame;
         if !trap::map_trap_code(&mut pt)
             || !pt.map_owned_page(trapframe_page, USER_TRAP_FRAME, Pte::Rw)
-            || !pt.map_owned_page(stack, VirtAddr(STACK_ADDR), Pte::Urw)
+            || !pt.map_owned_page(Page::alloc()?, VirtAddr(STACK_ADDR), Pte::Urw)
             || !pt.map_page(func, VirtAddr(ENTRY_ADDR), Pte::Urx)
         {
             return None;
         }
 
         let proc = unsafe {
-            ProcessNode(NonNull::new_unchecked(Box::into_raw(
+            let proc = ProcessNode(NonNull::new_unchecked(Box::into_raw(
                 Box::try_new(SpinLocked::new(Process {
-                    pid: NEXTPID.fetch_add(1, Ordering::SeqCst),
+                    pid: NEXTPID.fetch_add(1, Ordering::Relaxed),
                     pagetable: pt,
                     trapframe,
                     status: ProcStatus::Idle,
                     killed: false,
                 }))
                 .ok()?,
-            )))
-        };
-        unsafe {
+            )));
+
             (*trapframe).proc = proc;
-        }
+            (*trapframe).handle_trap = trap::handle_u_trap;
+            (*trapframe).ksatp = PageTable::make_satp(addr_of!(crate::KPAGETABLE));
+            (*trapframe).ksp = core::ptr::null_mut();
+            (*trapframe).hartid = 0;
+            (*trapframe).regs[Reg::PC as usize] = ENTRY_ADDR + vmm::page_offset(func.0);
+            (*trapframe).regs[Reg::SP as usize] = STACK_ADDR + PGSIZE;
+
+            proc
+        };
 
         let mut proc_list = PROC_LIST.lock();
         if !try_push_back(&mut proc_list, proc) {
             unsafe { proc.free() };
-            return None;
+            None
         } else if !Scheduler::take(proc) {
             proc_list.pop_back();
             unsafe { proc.free() };
-            return None;
+            None
+        } else {
+            Some(())
         }
-        Some(())
     }
 
     pub unsafe fn return_into(mut this: Guard<Process>) -> ! {

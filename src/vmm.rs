@@ -44,6 +44,7 @@ bitflags::bitflags! {
 
 pub const PGSIZE: usize = 0x1000;
 
+#[derive(Debug)]
 pub enum PteLink {
     Leaf(*mut u8),
     PageTable(*mut PageTable),
@@ -132,7 +133,8 @@ impl PageTable {
 
     /// Map a page that will be freed when the page table is dropped
     pub fn map_owned_page(&mut self, pa: Box<Page>, va: VirtAddr, perms: Pte) -> bool {
-        assert!(!(perms & Pte::Rwx).is_empty());
+        assert!(perms.intersects(Pte::Rwx));
+        assert!(va < VirtAddr::MAX);
         self.map_page_raw(Box::into_raw(pa).into(), va, perms | Pte::Owned)
     }
 
@@ -144,20 +146,22 @@ impl PageTable {
     ///
     /// Panics if the virtual page is already mapped or the virtual address is too large.
     pub fn map_page(&mut self, pa: PhysAddr, va: VirtAddr, perms: Pte) -> bool {
-        assert!(!(perms & Pte::Rwx).is_empty());
+        assert!(perms.intersects(Pte::Rwx));
+        assert!(va < VirtAddr::MAX);
         self.map_page_raw(pa, va, perms & !Pte::Owned)
     }
 
     /// Map all pages in the contiguous physical range `pa` to `pa + size` to the contiguous virtual
     /// range `va` to `va + size`. `pa` and `va` needn't be page aligned.
     pub fn map_pages(&mut self, pa: PhysAddr, mut va: VirtAddr, size: usize, perms: Pte) -> bool {
-        assert!(!(perms & Pte::Rwx).is_empty());
+        assert!(perms.intersects(Pte::Rwx));
         assert!(size != 0);
         va.0 &= !(PGSIZE - 1);
 
-        let [first, last] = [page_number(pa), page_number(pa.0 + size - 1)];
+        let [first, last] = [page_number(pa.0), page_number(pa.0.wrapping_add(size) - 1)];
+        assert!(first < VirtAddr::MAX.0 && last < VirtAddr::MAX.0);
         for (i, page) in (first..=last).step_by(PGSIZE).enumerate() {
-            if !self.map_page(PhysAddr(page), va + i * PGSIZE, perms) {
+            if !self.map_page_raw(PhysAddr(page), va + i * PGSIZE, perms) {
                 return false;
             }
         }
@@ -187,8 +191,6 @@ impl PageTable {
     }
 
     fn map_page_raw(&mut self, pa: PhysAddr, va: VirtAddr, perms: Pte) -> bool {
-        assert!(va < VirtAddr::MAX);
-
         let mut pt = self;
         for level in (1..SV39_LEVELS).rev() {
             let entry = &mut pt.0[va.vpn(level)];
@@ -206,15 +208,11 @@ impl PageTable {
         }
 
         let entry = &mut pt.0[va.vpn(0)];
-        match entry.next() {
-            PteLink::Leaf(addr) => {
-                panic!("PageTable::map remapping virtual address {va} (was {addr:?})")
-            }
-            PteLink::PageTable(addr) => {
-                panic!("PageTable::map remapping virtual address {va} (was pagetable at {addr:?})")
-            }
-            PteLink::Invalid => {}
-        }
+        assert!(
+            matches!(entry.next(), PteLink::Invalid),
+            "remapping virtual addr (was {:?})",
+            entry.next(),
+        );
         // the A and D bits can be treated as secondary R and W bits on some boards
         *entry = PageTableEntry::new(pa, (perms | Pte::D | Pte::A).bits());
         true
@@ -249,18 +247,13 @@ impl Drop for PageTable {
 pub struct VirtAddr(pub usize);
 
 impl VirtAddr {
-    #[allow(clippy::unusual_byte_groupings)]
-    pub const MAX: VirtAddr = VirtAddr(0b100000000_000000000_000000000_000000000000);
+    pub const MAX: VirtAddr = VirtAddr(1 << (12 + SV39_LEVELS * 9 - 1));
 
     pub fn to_phys(self, mut pt: &PageTable) -> Option<PhysAddr> {
         for level in (0..SV39_LEVELS).rev() {
-            let entry = pt.0[self.vpn(level)];
-            match entry.next() {
-                PteLink::Leaf(addr) => {
-                    let offset = (1 << (12 + level * 9)) - 1;
-                    return Some(PhysAddr(addr as usize + (self.0 & offset)));
-                }
+            match pt.0[self.vpn(level)].next() {
                 PteLink::PageTable(next) => pt = unsafe { &*next },
+                PteLink::Leaf(addr) => return Some(PhysAddr(addr as usize + self.offset(level))),
                 PteLink::Invalid => return None,
             }
         }
@@ -270,6 +263,11 @@ impl VirtAddr {
     pub const fn vpn(self, vpn: usize) -> usize {
         debug_assert!(vpn < 3);
         (self.0 >> (12 + vpn * 9)) & 0x1ff
+    }
+
+    pub const fn offset(self, level: usize) -> usize {
+        debug_assert!(level < SV39_LEVELS);
+        self.0 & ((1 << (12 + level * 9)) - 1)
     }
 }
 
@@ -339,10 +337,12 @@ impl Page {
     }
 }
 
-pub fn page_number(addr: impl Into<PhysAddr>) -> usize {
-    addr.into().0 & !(PGSIZE - 1)
+#[inline(always)]
+pub const fn page_number(addr: usize) -> usize {
+    addr & !(PGSIZE - 1)
 }
 
-pub fn page_offset(addr: impl Into<PhysAddr>) -> usize {
-    addr.into().0 & (PGSIZE - 1)
+#[inline(always)]
+pub const fn page_offset(addr: usize) -> usize {
+    addr & (PGSIZE - 1)
 }
