@@ -115,6 +115,10 @@ impl PageTableEntry {
             PteLink::PageTable(addr as *mut _)
         }
     }
+
+    pub const fn perms(self) -> Pte {
+        Pte::from_bits_retain(self.0 & 0x3ff)
+    }
 }
 
 #[repr(C, align(0x1000))] // PGSIZE
@@ -249,24 +253,68 @@ pub struct VirtAddr(pub usize);
 impl VirtAddr {
     pub const MAX: VirtAddr = VirtAddr(1 << (12 + SV39_LEVELS * 9 - 1));
 
-    pub fn to_phys(self, mut pt: &PageTable) -> Option<PhysAddr> {
+    /// Translate the virtual address `self` to a physical address through page table `pt`. Returns
+    /// `None` if no leaf PTE was found before `SV39_LEVELS` jumps or the leaf PTE permissions are
+    /// missing any bits from `perms`.
+    pub fn to_phys(self, mut pt: &PageTable, perms: Pte) -> Option<PhysAddr> {
         for level in (0..SV39_LEVELS).rev() {
-            match pt.0[self.vpn(level)].next() {
+            let entry = pt.0[self.vpn(level)];
+            match entry.next() {
                 PteLink::PageTable(next) => pt = unsafe { &*next },
-                PteLink::Leaf(addr) => return Some(PhysAddr(addr as usize + self.offset(level))),
-                PteLink::Invalid => return None,
+                PteLink::Leaf(addr) if entry.perms().contains(perms) => {
+                    return Some(PhysAddr(addr as usize + self.offset(level)));
+                }
+                _ => return None,
             }
         }
         None
     }
 
-    pub const fn vpn(self, vpn: usize) -> usize {
-        debug_assert!(vpn < 3);
-        (self.0 >> (12 + vpn * 9)) & 0x1ff
+    /// Copy all of `buf` into address `self` in page table `pt`. Fails if any pages are not
+    /// writable or accessible from user mode. May fail after a partial write.
+    pub fn ucopy_to(mut self, pt: &PageTable, mut buf: &[u8]) -> bool {
+        while !buf.is_empty() {
+            let Some(phys) = self.to_phys(pt, Pte::U | Pte::W) else {
+                return false;
+            };
+
+            let count = (PGSIZE - page_offset(self.0)).min(buf.len());
+            unsafe {
+                core::ptr::copy_nonoverlapping(buf.as_ptr(), phys.0 as *mut u8, count);
+            }
+
+            self.0 = page_number(self.0 + PGSIZE);
+            buf = &buf[count..];
+        }
+
+        true
     }
 
-    pub const fn offset(self, level: usize) -> usize {
-        debug_assert!(level < SV39_LEVELS);
+    /// Copy `buf.len()` bytes from address `self` in page table `pt`. Fails if any pages are not
+    /// readable or accessible from user mode. May fail after a partial write.
+    pub fn ucopy_from(mut self, pt: &PageTable, mut buf: &mut [u8]) -> bool {
+        while !buf.is_empty() {
+            let Some(phys) = self.to_phys(pt, Pte::U | Pte::R) else {
+                return false;
+            };
+
+            let count = (PGSIZE - page_offset(self.0)).min(buf.len());
+            unsafe {
+                core::ptr::copy_nonoverlapping(phys.0 as *const u8, buf.as_mut_ptr(), count);
+            }
+
+            self.0 = page_number(self.0 + PGSIZE);
+            buf = &mut buf[count..];
+        }
+
+        true
+    }
+
+    const fn vpn(self, level: usize) -> usize {
+        (self.0 >> (12 + level * 9)) & 0x1ff
+    }
+
+    const fn offset(self, level: usize) -> usize {
         self.0 & ((1 << (12 + level * 9)) - 1)
     }
 }

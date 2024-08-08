@@ -9,14 +9,13 @@
 #![feature(stmt_expr_attributes)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+use alloc::boxed::Box;
 use core::{
     arch::asm,
     mem::MaybeUninit,
     ops::Range,
     ptr::{addr_of, addr_of_mut},
 };
-
-use alloc::boxed::Box;
 use fdt_rs::{
     base::{DevTree, DevTreeNode},
     prelude::{FallibleIterator, PropReader},
