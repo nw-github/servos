@@ -7,9 +7,13 @@
 #![feature(allocator_api)]
 #![feature(new_uninit)]
 #![feature(stmt_expr_attributes)]
+#![feature(slice_split_once)]
+#![feature(try_with_capacity)]
+#![feature(pointer_is_aligned_to)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use alloc::boxed::Box;
+use fs::{initrd::InitRd, vfs::{Vfs, VFS}, FileSystem, OpenFlags};
 use core::{
     arch::asm,
     mem::MaybeUninit,
@@ -35,6 +39,7 @@ use uart::{DebugIo, CONS};
 use vmm::{PageTable, Pte, PGSIZE};
 
 mod dump_fdt;
+mod fs;
 mod hart;
 mod plic;
 mod proc;
@@ -371,6 +376,22 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
 
 extern "C" fn kinithart(hartid: usize) -> ! {
     println!("Hello world from hart {hartid}: sp: {}", get_hart_info().sp);
+
+    static FILE: &[u8] = include_bytes!("../out.img");
+    _ = VFS.lock().mount(b"/"[..].into(), InitRd::new(FILE).unwrap());
+
+    let mut buf = [0; 0x100];
+    {
+        let file = Vfs::open(b"/a.txt", OpenFlags::empty()).unwrap();
+        let count = file.read(5, &mut buf).unwrap();
+        println!("read {count} bytes from a.txt: '{:?}'", core::str::from_utf8(&buf[..count]));
+    }
+
+    {
+        let file = Vfs::open(b"/b/c.txt", OpenFlags::empty()).unwrap();
+        let count = file.read(0, &mut buf).unwrap();
+        println!("read {count} bytes from /b/c.txt: '{:?}'", core::str::from_utf8(&buf[..count]));
+    }
 
     // ask for PLIC interrupts
     PLIC.set_hart_priority_threshold(0);

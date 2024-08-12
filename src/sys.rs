@@ -41,7 +41,7 @@ impl SysResult {
     }
 }
 
-pub fn sys_shutdown(_proc: ProcessNode, typ: usize) -> SysResult {
+fn sys_shutdown(_proc: ProcessNode, typ: usize) -> SysResult {
     // TODO: permission check
     match typ {
         0 => POWER.lock().shutdown(),
@@ -50,7 +50,7 @@ pub fn sys_shutdown(_proc: ProcessNode, typ: usize) -> SysResult {
     }
 }
 
-pub fn sys_kill(_proc: ProcessNode, pid: usize) -> SysResult {
+fn sys_kill(_proc: ProcessNode, pid: usize) -> SysResult {
     if pid == 0 {
         return SysResult::err(SysError::InvalidArgument);
     }
@@ -75,7 +75,7 @@ pub fn sys_kill(_proc: ProcessNode, pid: usize) -> SysResult {
     SysResult::err(SysError::NotFound)
 }
 
-pub fn sys_getpid(proc: ProcessNode) -> SysResult {
+fn sys_getpid(proc: ProcessNode) -> SysResult {
     SysResult::ok(unsafe { proc.with(|p| p.pid as isize) })
 }
 

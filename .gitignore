@@ -1,2 +1,4 @@
 /target
 .gdbinit
+test
+out.img

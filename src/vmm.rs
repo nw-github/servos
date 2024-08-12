@@ -207,7 +207,7 @@ impl PageTable {
                     };
                     *entry = PageTableEntry::new(next.into(), 0);
                     pt = unsafe { &mut *next };
-                }
+                } 
             }
         }
 
