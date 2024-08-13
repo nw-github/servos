@@ -4,7 +4,7 @@ use alloc::{
 };
 use servos::lock::SpinLocked;
 
-use crate::fs::FsError;
+use crate::{fs::FsError, vmm::{PageTable, VirtAddr}};
 
 use super::{
     path::{OwnedPath, Path}, DirEntry, FileSystem, FsResult, OpenFlags, VNode
@@ -26,6 +26,14 @@ impl FileRef {
         }
 
         self.dev.read(&self.node, pos, buf)
+    }
+
+    pub fn read_va(&self, pos: u64, pt: &PageTable, va: VirtAddr, len: usize) -> FsResult<usize> {
+        if self.node.directory {
+            return Err(FsError::InvalidOp);
+        }
+
+        self.dev.read_va(&self.node, pos, pt, va, len)
     }
 
     pub fn write(&self, pos: u64, buf: &[u8]) -> FsResult<usize> {

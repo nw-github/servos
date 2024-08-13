@@ -1,6 +1,8 @@
 use bitflags::bitflags;
 use path::Path;
 
+use crate::vmm::{page_offset, PageTable, Pte, VirtAddr, PGSIZE};
+
 pub mod initrd;
 pub mod path;
 pub mod vfs;
@@ -16,6 +18,7 @@ pub enum FsError {
     Unsupported,
     CorruptedFs,
     InvalidPerms,
+    BadVa,
 }
 
 pub struct VNode {
@@ -38,6 +41,39 @@ pub trait FileSystem {
     fn write(&self, vn: &VNode, pos: u64, buf: &[u8]) -> FsResult<usize>;
     fn close(&self, vn: &VNode) -> FsResult<()>;
     fn get_dir_entry(&self, vn: &VNode, pos: usize) -> FsResult<Option<DirEntry>>;
+
+    fn read_va(
+        &self,
+        vn: &VNode,
+        mut pos: u64,
+        pt: &PageTable,
+        buf: VirtAddr,
+        mut len: usize,
+    ) -> FsResult<usize> {
+        let mut total = 0;
+        while len != 0 {
+            let Some(pa) = buf.to_phys(pt, Pte::U | Pte::W) else {
+                return Err(FsError::BadVa);
+            };
+
+            let buf = unsafe {
+                core::slice::from_raw_parts_mut(
+                    pa.0 as *mut u8,
+                    (PGSIZE - page_offset(pa.0)).min(len),
+                )
+            };
+            let read = self.read(vn, pos, buf)?;
+            total += read;
+            if read < buf.len() {
+                break;
+            }
+
+            len -= read;
+            pos += read as u64;
+        }
+
+        Ok(total)
+    }
 
     // fn rename(&self, vn: &VNode, abspath: &Path, mvdir: bool) -> FsResult<()>;
 }

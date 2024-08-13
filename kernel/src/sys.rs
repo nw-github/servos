@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use shared::sys::{Sys, SysError};
 
 use crate::{
     fs::{vfs::Vfs, FsError, OpenFlags},
@@ -7,31 +8,6 @@ use crate::{
     proc::{ProcessNode, Reg, PROC_LIST},
     vmm::VirtAddr,
 };
-
-#[derive(strum::FromRepr, Clone, Copy, PartialEq, Eq)]
-#[repr(usize)]
-pub enum Sys {
-    Shutdown = 1,
-    Kill,
-    GetPid,
-    Open,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(isize)]
-pub enum SysError {
-    InvalidSyscall = 1,
-    InvalidArgument,
-    NotFound,
-    BadFd,
-    NoMem,
-    PathNotFound,
-    ReadOnly,
-    InvalidOp,
-    Unsupported,
-    CorruptedFs,
-    InvalidPerms,
-}
 
 impl From<FsError> for SysError {
     fn from(value: FsError) -> Self {
@@ -43,6 +19,7 @@ impl From<FsError> for SysError {
             FsError::Unsupported => SysError::Unsupported,
             FsError::CorruptedFs => SysError::CorruptedFs,
             FsError::InvalidPerms => SysError::InvalidPerms,
+            FsError::BadVa => SysError::BadAddr,
         }
     }
 }
@@ -68,7 +45,7 @@ impl SysResult {
     }
 }
 
-// sint shutdown(uint typ);
+// void shutdown(uint typ);
 fn sys_shutdown(_proc: ProcessNode, typ: usize) -> SysResult {
     // TODO: permission check
     match typ {
@@ -78,7 +55,7 @@ fn sys_shutdown(_proc: ProcessNode, typ: usize) -> SysResult {
     }
 }
 
-// sint kill(uint pid);
+// void kill(uint pid);
 fn sys_kill(_proc: ProcessNode, pid: usize) -> SysResult {
     if pid == 0 {
         return SysResult::err(SysError::InvalidArgument);
@@ -104,19 +81,19 @@ fn sys_kill(_proc: ProcessNode, pid: usize) -> SysResult {
     SysResult::err(SysError::NotFound)
 }
 
-// sint getpid(void);
+// uint getpid(void);
 fn sys_getpid(proc: ProcessNode) -> SysResult {
     SysResult::ok(unsafe { proc.with(|p| p.pid as isize) })
 }
 
-// sint open(const char *path, uint pathlen, u32 flags);
+// uint open(const char *path, uint pathlen, u32 flags);
 fn sys_open(proc: ProcessNode, path: VirtAddr, len: usize, flags: u32) -> SysResult {
     let Ok(mut buf) = Vec::try_with_capacity(len) else {
         return SysResult::err(SysError::NoMem);
     };
     unsafe {
         if !proc.with(|proc| path.ucopy_from(&proc.pagetable, buf.spare_capacity_mut())) {
-            return SysResult::err(SysError::InvalidArgument);
+            return SysResult::err(SysError::BadAddr);
         }
 
         buf.set_len(len);
@@ -134,14 +111,44 @@ fn sys_open(proc: ProcessNode, path: VirtAddr, len: usize, flags: u32) -> SysRes
     }
 }
 
+// void close(uint fd);
+fn sys_close(proc: ProcessNode, fd: usize) -> SysResult {
+    unsafe {
+        proc.with(|mut proc| {
+            if fd >= proc.files.0.len() || proc.files.0[fd].take().is_none() {
+                return SysResult::err(SysError::BadFd);
+            }
+
+            SysResult::ok(0)
+        })
+    }
+}
+
+// uint read(uint fd, u64 pos, char *buf, uint buflen);
+fn sys_read(proc: ProcessNode, pos: usize, fd: usize, buf: VirtAddr, buflen: usize) -> SysResult {
+    unsafe {
+        proc.with(|proc| {
+            let Some(fd) = proc.files.get(fd).and_then(|f| f.as_ref()) else {
+                return SysResult::err(SysError::BadFd);
+            };
+
+            match fd.read_va(pos as u64, &proc.pagetable, buf, buflen) {
+                Ok(read) => SysResult::ok(read as isize),
+                Err(err) => SysResult::err(err.into()),
+            }
+        })
+    }
+}
+
 pub fn handle_syscall(proc: ProcessNode) {
-    let (syscall_no, a0, a1, a2) = unsafe {
+    let (syscall_no, a0, a1, a2, a3) = unsafe {
         proc.with(|proc| {
             (
                 (*proc.trapframe)[Reg::A7],
                 (*proc.trapframe)[Reg::A0],
                 (*proc.trapframe)[Reg::A1],
                 (*proc.trapframe)[Reg::A2],
+                (*proc.trapframe)[Reg::A3],
             )
         })
     };
@@ -151,6 +158,8 @@ pub fn handle_syscall(proc: ProcessNode) {
         Some(Sys::Kill) => sys_kill(proc, a0),
         Some(Sys::GetPid) => sys_getpid(proc),
         Some(Sys::Open) => sys_open(proc, VirtAddr(a0), a1, (a2 & u32::MAX as usize) as u32),
+        Some(Sys::Close) => sys_close(proc, a0),
+        Some(Sys::Read) => sys_read(proc, a0, a1, VirtAddr(a2), a3),
         None => SysResult::err(SysError::InvalidSyscall),
     };
 

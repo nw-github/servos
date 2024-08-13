@@ -219,9 +219,11 @@ impl Process {
             }
         }
 
+        _ = highest_va; // heap
+
         // allocate 1MiB of stack
-        let stack_top = page_number(highest_va) + PGSIZE;
-        for page in (stack_top + PGSIZE..=stack_top + 0x100000 + PGSIZE).step_by(PGSIZE) {
+        let stack_top = USER_TRAP_FRAME.0 - PGSIZE * 2;
+        for page in (stack_top - 0x100000..=stack_top).step_by(PGSIZE) {
             if !pt.map_owned_page(Page::uninit()?, VirtAddr(page), Pte::Urw) {
                 return None;
             }
@@ -246,7 +248,7 @@ impl Process {
             (*trapframe).ksp = core::ptr::null_mut();
             (*trapframe).hartid = 0;
             (*trapframe).regs[Reg::PC as usize] = file.ehdr.entry as usize;
-            (*trapframe).regs[Reg::SP as usize] = stack_top;
+            (*trapframe).regs[Reg::SP as usize] = stack_top + PGSIZE;
 
             proc
         })
