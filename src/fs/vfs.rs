@@ -1,5 +1,4 @@
 use alloc::{
-    boxed::Box,
     collections::{btree_map::Entry, BTreeMap},
     sync::Arc,
 };
@@ -7,7 +6,9 @@ use servos::lock::SpinLocked;
 
 use crate::fs::FsError;
 
-use super::{FileSystem, FsResult, OpenFlags, VNode};
+use super::{
+    path::{OwnedPath, Path}, DirEntry, FileSystem, FsResult, OpenFlags, VNode
+};
 
 pub struct FileRef {
     node: VNode,
@@ -34,6 +35,10 @@ impl FileRef {
 
         self.dev.write(&self.node, pos, buf)
     }
+
+    pub fn get_dir_entry(&self, cur: usize) -> FsResult<Option<DirEntry>> {
+        self.dev.get_dir_entry(&self.node, cur)
+    }
 }
 
 impl Drop for FileRef {
@@ -48,7 +53,7 @@ pub enum MountError<T> {
 }
 
 pub struct Vfs {
-    mounts: BTreeMap<Box<[u8]>, Arc<dyn FileSystem>>,
+    mounts: BTreeMap<OwnedPath, Arc<dyn FileSystem>>,
 }
 
 impl Vfs {
@@ -60,7 +65,7 @@ impl Vfs {
 
     pub fn mount<T: FileSystem + 'static>(
         &mut self,
-        path: Box<[u8]>,
+        path: OwnedPath,
         fs: T,
     ) -> Result<(), MountError<T>> {
         // TODO: alloc failure
@@ -73,19 +78,29 @@ impl Vfs {
         }
     }
 
-    pub fn unmount(&mut self, path: &[u8]) -> bool {
+    pub fn unmount(&mut self, path: &Path) -> bool {
         self.mounts.remove(path).is_some()
     }
 
-    pub fn open(path: &[u8], flags: OpenFlags) -> FsResult<FileRef> {
-        let Some((dev, path)) = VFS.lock().mounts.iter().find_map(|(mount, dev)| {
-            let (prefix, post) = path.split_at_checked(mount.len())?;
-            (prefix == &**mount).then(|| (dev.clone(), post))
-        }) else {
-            return Err(FsError::PathNotFound);
-        };
+    pub fn open(path: impl AsRef<Path>, flags: OpenFlags) -> FsResult<FileRef> {
+        fn open(path: &Path, flags: OpenFlags) -> FsResult<FileRef> {
+            let Some((dev, path)) = VFS
+                .lock()
+                .mounts
+                .iter()
+                .rev()
+                .find_map(|(mount, dev)| {
+                    let rest = path.strip_prefix(mount)?;
+                    Some((dev.clone(), rest))
+                })
+            else {
+                return Err(FsError::PathNotFound);
+            };
 
-        Ok(unsafe { FileRef::new(dev.open(path, flags)?, dev) })
+            Ok(unsafe { FileRef::new(dev.open(path, flags)?, dev) })
+        }
+
+        open(path.as_ref(), flags)
     }
 }
 

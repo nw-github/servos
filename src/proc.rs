@@ -5,12 +5,14 @@ use core::{
 };
 
 use crate::{
+    fs::vfs::FileRef,
     hart::get_hart_info,
     trap::{self, USER_TRAP_VEC},
     vmm::{self, Page, PageTable, PhysAddr, Pte, VirtAddr, PGSIZE},
 };
 use alloc::{boxed::Box, collections::VecDeque};
 use servos::{
+    arr::HoleArray,
     lock::{Guard, SpinLocked},
     riscv::{enable_intr, r_tp},
 };
@@ -117,6 +119,7 @@ pub struct Process {
     pub trapframe: *mut TrapFrame,
     pub status: ProcStatus,
     pub killed: bool,
+    pub files: HoleArray<FileRef, 32>,
 }
 
 pub const USER_TRAP_FRAME: VirtAddr = VirtAddr(USER_TRAP_VEC.0 - PGSIZE);
@@ -146,6 +149,7 @@ impl Process {
                     trapframe,
                     status: ProcStatus::Idle,
                     killed: false,
+                    files: HoleArray::empty(),
                 }))
                 .ok()?,
             )));

@@ -1,8 +1,9 @@
 use bitflags::bitflags;
+use path::Path;
 
-pub mod vfs;
-pub mod arr;
 pub mod initrd;
+pub mod path;
+pub mod vfs;
 
 pub type FsResult<T> = Result<T, FsError>;
 
@@ -23,14 +24,22 @@ pub struct VNode {
     readonly: bool,
 }
 
+pub struct DirEntry {
+    name: [u8; 0x100],
+    ino: u64,
+    directory: bool,
+    readonly: bool,
+}
+
 pub trait FileSystem {
     /// Open a path. `path` should be the components after the mount point
-    fn open(&self, path: &[u8], flags: OpenFlags) -> FsResult<VNode>;
+    fn open(&self, path: &Path, flags: OpenFlags) -> FsResult<VNode>;
     fn read(&self, vn: &VNode, pos: u64, buf: &mut [u8]) -> FsResult<usize>;
     fn write(&self, vn: &VNode, pos: u64, buf: &[u8]) -> FsResult<usize>;
     fn close(&self, vn: &VNode) -> FsResult<()>;
+    fn get_dir_entry(&self, vn: &VNode, pos: usize) -> FsResult<Option<DirEntry>>;
 
-    // fn rename(&self, vn: &VNode, abspath: &[u8], mvdir: bool) -> FsResult<()>;
+    // fn rename(&self, vn: &VNode, abspath: &Path, mvdir: bool) -> FsResult<()>;
 }
 
 bitflags! {

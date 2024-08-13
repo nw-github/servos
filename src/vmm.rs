@@ -1,4 +1,4 @@
-use core::ptr::NonNull;
+use core::{mem::MaybeUninit, ptr::NonNull};
 
 use alloc::boxed::Box;
 
@@ -292,7 +292,7 @@ impl VirtAddr {
 
     /// Copy `buf.len()` bytes from address `self` in page table `pt`. Fails if any pages are not
     /// readable or accessible from user mode. May fail after a partial write.
-    pub fn ucopy_from(mut self, pt: &PageTable, mut buf: &mut [u8]) -> bool {
+    pub fn ucopy_from(mut self, pt: &PageTable, mut buf: &mut [MaybeUninit<u8>]) -> bool {
         while !buf.is_empty() {
             let Some(phys) = self.to_phys(pt, Pte::U | Pte::R) else {
                 return false;
@@ -300,7 +300,7 @@ impl VirtAddr {
 
             let count = (PGSIZE - page_offset(self.0)).min(buf.len());
             unsafe {
-                core::ptr::copy_nonoverlapping(phys.0 as *const u8, buf.as_mut_ptr(), count);
+                core::ptr::copy_nonoverlapping(phys.0 as *const u8, buf.as_mut_ptr().cast(), count);
             }
 
             self.0 = page_number(self.0 + PGSIZE);

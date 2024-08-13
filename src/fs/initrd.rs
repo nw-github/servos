@@ -2,7 +2,7 @@ use core::mem::size_of;
 
 use alloc::{boxed::Box, vec::Vec};
 
-use super::{FileSystem, FsError, FsResult, VNode};
+use super::{path::Path, DirEntry, FileSystem, FsError, FsResult, VNode};
 
 pub const INITRD_MAGIC: u32 = 0xce3fdefe;
 
@@ -66,35 +66,38 @@ impl InitRd {
             data: try_vec_from_slice(files)?.into(),
         })
     }
+
+    pub fn dir_entry(&self, dir: &INode, pos: usize) -> Option<(usize, &INode)> {
+        const U64SZ: usize = size_of::<u64>();
+        if pos >= dir.size as usize {
+            return None;
+        }
+
+        let addr = dir.addr as usize + pos * U64SZ;
+        let entry = u64::from_le_bytes(self.data.get(addr..addr + U64SZ)?.try_into().unwrap());
+        let entry: usize = entry.try_into().ok()?;
+        Some((entry, self.inodes.get(entry)?))
+    }
+
+    pub fn vnode_to_inode(&self, vn: &VNode) -> FsResult<&INode> {
+        self.inodes.get(vn.ino as usize).ok_or(FsError::CorruptedFs)
+    }
 }
 
 impl FileSystem for InitRd {
-    fn open(&self, path: &[u8], _flags: super::OpenFlags) -> FsResult<VNode> {
+    fn open(&self, path: &Path, _flags: super::OpenFlags) -> FsResult<VNode> {
         let mut ino = 0;
-        for component in path.split(|&c| c == b'/') {
+        for component in path.components() {
             if self.inodes[ino].typ != INODE_DIR {
                 return Err(FsError::PathNotFound);
             }
 
             for i in 0..self.inodes[ino].size {
-                const U64SZ: usize = size_of::<u64>();
-
-                let addr = self.inodes[ino].addr as usize + i as usize * U64SZ;
-                let entry = u64::from_le_bytes(
-                    self.data
-                        .get(addr..addr + U64SZ)
-                        .ok_or(FsError::CorruptedFs)?
-                        .try_into()
-                        .unwrap(),
-                );
-                let entry: usize = entry.try_into().map_err(|_| FsError::CorruptedFs)?;
-                if self
-                    .inodes
-                    .get(entry)
-                    .ok_or(FsError::CorruptedFs)?
-                    .name_eq(component)
-                {
-                    ino = entry;
+                let (entry_no, inode) = self
+                    .dir_entry(&self.inodes[ino], i as usize)
+                    .ok_or(FsError::CorruptedFs)?;
+                if inode.name_eq(component) {
+                    ino = entry_no;
                     break;
                 }
             }
@@ -108,10 +111,7 @@ impl FileSystem for InitRd {
     }
 
     fn read(&self, vn: &VNode, pos: u64, buf: &mut [u8]) -> FsResult<usize> {
-        let inode = self
-            .inodes
-            .get(vn.ino as usize)
-            .ok_or(FsError::CorruptedFs)?;
+        let inode = self.vnode_to_inode(vn)?;
         if inode.typ == INODE_DIR {
             return Err(FsError::InvalidOp);
         }
@@ -132,6 +132,27 @@ impl FileSystem for InitRd {
 
     fn close(&self, _vn: &VNode) -> FsResult<()> {
         Ok(())
+    }
+
+    fn get_dir_entry(&self, vn: &VNode, pos: usize) -> FsResult<Option<DirEntry>> {
+        let dir = self.vnode_to_inode(vn)?;
+        if dir.typ != INODE_DIR {
+            return Err(FsError::InvalidOp);
+        }
+
+        let Some((ino, inode)) = self.dir_entry(dir, pos) else {
+            return Ok(None);
+        };
+
+        let mut entry = DirEntry {
+            name: [0; 0x100],
+            ino: ino as u64,
+            directory: inode.typ == dir.typ,
+            readonly: true,
+        };
+        entry.name[..inode.name.len()].copy_from_slice(&inode.name);
+
+        Ok(Some(entry))
     }
 }
 

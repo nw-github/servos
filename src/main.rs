@@ -10,15 +10,16 @@
 #![feature(slice_split_once)]
 #![feature(try_with_capacity)]
 #![feature(pointer_is_aligned_to)]
+#![feature(slice_from_ptr_range)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use alloc::boxed::Box;
-use fs::{initrd::InitRd, vfs::{Vfs, VFS}, FileSystem, OpenFlags};
+use fs::{initrd::InitRd, path::Path, vfs::{Vfs, VFS}, FileSystem, OpenFlags};
 use core::{
     arch::asm,
     mem::MaybeUninit,
     ops::Range,
-    ptr::{addr_of, addr_of_mut},
+    ptr::{addr_of, addr_of_mut}, sync::atomic::AtomicUsize,
 };
 use fdt_rs::{
     base::{DevTree, DevTreeNode},
@@ -56,6 +57,8 @@ static mut BOOT_STACK: Align16<MaybeUninit<[u8; HART_STACK_LEN]>> = Align16(Mayb
 static ALLOCATOR: SpinLocked<BlockAlloc> = SpinLocked::new(BlockAlloc::new());
 
 static mut KPAGETABLE: PageTable = PageTable::new();
+
+static BOOT_HART: AtomicUsize = AtomicUsize::new(0);
 
 extern "C" {
     static _text_start: u8;
@@ -337,6 +340,8 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
     unsafe {
         println!("\n\n");
 
+        BOOT_HART.store(hartid, core::sync::atomic::Ordering::SeqCst);
+
         let dt = DevTree::from_raw_pointer(fdt).expect("Couldn't parse device tree from a1");
         let uart_plic_irq = init_uart(&dt);
         if uart_plic_irq.is_none() {
@@ -378,17 +383,17 @@ extern "C" fn kinithart(hartid: usize) -> ! {
     println!("Hello world from hart {hartid}: sp: {}", get_hart_info().sp);
 
     static FILE: &[u8] = include_bytes!("../out.img");
-    _ = VFS.lock().mount(b"/"[..].into(), InitRd::new(FILE).unwrap());
+    _ = VFS.lock().mount(Path::new("/").try_into().unwrap(), InitRd::new(FILE).unwrap());
 
     let mut buf = [0; 0x100];
     {
-        let file = Vfs::open(b"/a.txt", OpenFlags::empty()).unwrap();
+        let file = Vfs::open("/a.txt", OpenFlags::empty()).unwrap();
         let count = file.read(5, &mut buf).unwrap();
         println!("read {count} bytes from a.txt: '{:?}'", core::str::from_utf8(&buf[..count]));
     }
 
     {
-        let file = Vfs::open(b"/b/c.txt", OpenFlags::empty()).unwrap();
+        let file = Vfs::open("/b/c.txt", OpenFlags::empty()).unwrap();
         let count = file.read(0, &mut buf).unwrap();
         println!("read {count} bytes from /b/c.txt: '{:?}'", core::str::from_utf8(&buf[..count]));
     }
