@@ -13,17 +13,25 @@
 #![feature(slice_from_ptr_range)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use alloc::boxed::Box;
-use fs::{initrd::InitRd, path::Path, vfs::{Vfs, VFS}, FileSystem, OpenFlags};
+use alloc::{boxed::Box, vec};
 use core::{
     arch::asm,
+    ffi::CStr,
     mem::MaybeUninit,
     ops::Range,
-    ptr::{addr_of, addr_of_mut}, sync::atomic::AtomicUsize,
+    ptr::{addr_of, addr_of_mut},
+    sync::atomic::AtomicUsize,
 };
+use elf::{ElfFile, SHN_UNDEF};
 use fdt_rs::{
     base::{DevTree, DevTreeNode},
     prelude::{FallibleIterator, PropReader},
+};
+use fs::{
+    initrd::InitRd,
+    path::Path,
+    vfs::{Vfs, VFS},
+    FileSystem, OpenFlags,
 };
 use hart::{get_hart_info, HartInfo, PowerManagement, HART_INFO, HART_STACK_LEN, MAX_HARTS, POWER};
 use plic::PLIC;
@@ -40,6 +48,7 @@ use uart::{DebugIo, CONS};
 use vmm::{PageTable, Pte, PGSIZE};
 
 mod dump_fdt;
+mod elf;
 mod fs;
 mod hart;
 mod plic;
@@ -369,10 +378,7 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
         init_vmem();
         init_harts();
 
-        for _ in 0..5 {
-            Process::spawn_from_function(init_user_mode).expect("couldn't create process");
-        }
-
+        Process::spawn_from_function(init_user_mode).expect("couldn't create process");
         // dump_fdt::dump_tree(dt).unwrap();
 
         _start_hart(hartid, PageTable::make_satp(addr_of!(KPAGETABLE)))
@@ -382,20 +388,28 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
 extern "C" fn kinithart(hartid: usize) -> ! {
     println!("Hello world from hart {hartid}: sp: {}", get_hart_info().sp);
 
-    static FILE: &[u8] = include_bytes!("../../out.img");
-    _ = VFS.lock().mount(Path::new("/").try_into().unwrap(), InitRd::new(FILE).unwrap());
+    if BOOT_HART.load(core::sync::atomic::Ordering::SeqCst) == hartid {
+        static FILE: &[u8] = include_bytes!("../../out.img");
+        _ = VFS.lock().mount(
+            Path::new("/").try_into().unwrap(),
+            InitRd::new(FILE).unwrap(),
+        );
 
-    let mut buf = [0; 0x100];
-    {
-        let file = Vfs::open("/a.txt", OpenFlags::empty()).unwrap();
-        let count = file.read(5, &mut buf).unwrap();
-        println!("read {count} bytes from a.txt: '{:?}'", core::str::from_utf8(&buf[..count]));
-    }
+        let mut buf = vec![0; 0x5000];
+        let file = Vfs::open("/init", OpenFlags::empty()).unwrap();
+        let read = file.read(0, &mut buf).unwrap();
+        buf.truncate(read);
 
-    {
-        let file = Vfs::open("/b/c.txt", OpenFlags::empty()).unwrap();
-        let count = file.read(0, &mut buf).unwrap();
-        println!("read {count} bytes from /b/c.txt: '{:?}'", core::str::from_utf8(&buf[..count]));
+        let file = ElfFile::new(&buf).unwrap();
+        println!("Program headers: ");
+        for ph in file.pheaders.iter() {
+            println!("{ph:?}");
+        }
+
+        println!("Section headers: ");
+        for sh in file.sheaders.iter() {
+            println!("Name: {:?}\n\t{sh:?}", sh.name(&file));
+        }
     }
 
     // ask for PLIC interrupts
