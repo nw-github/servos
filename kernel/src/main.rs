@@ -382,7 +382,7 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
 extern "C" fn kinithart(hartid: usize) -> ! {
     println!("Hello world from hart {hartid}: sp: {}", get_hart_info().sp);
 
-    static FILE: &[u8] = include_bytes!("../out.img");
+    static FILE: &[u8] = include_bytes!("../../out.img");
     _ = VFS.lock().mount(Path::new("/").try_into().unwrap(), InitRd::new(FILE).unwrap());
 
     let mut buf = [0; 0x100];
