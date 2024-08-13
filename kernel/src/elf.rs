@@ -38,13 +38,13 @@ pub struct Shdr {
 #[derive(Debug)]
 pub struct Phdr {
     pub typ: u32,
+    pub flags: u32,
     pub offset: u64,
     pub vaddr: u64,
     pub paddr: u64,
-    pub filesz: u32,
-    pub memsz: u32,
-    pub flags: u32,
-    pub align: u32,
+    pub filesz: u64,
+    pub memsz: u64,
+    pub align: u64,
 }
 
 #[repr(C)]
@@ -85,6 +85,12 @@ pub const PN_XNUM: u16 = 0xffff;
 pub const SHN_LORESERVE: u16 = 0xff00;
 pub const SHN_XINDEX: u16 = 0xffff;
 pub const SHN_UNDEF: u16 = 0;
+
+pub const PT_LOAD: u32 = 1;
+
+pub const PF_R: u32 = 1;
+pub const PF_W: u32 = 2;
+pub const PF_X: u32 = 4;
 
 pub struct ElfFile<'a> {
     pub ehdr: &'a EHdr,

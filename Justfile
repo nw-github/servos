@@ -1,5 +1,6 @@
 test:
     cargo build --bin init
-    rsync target/riscv64imac-unknown-none-elf/debug/init test/init
-    python mkfs.py test out.img
+    mkdir -p initrd/bin
+    rsync target/riscv64imac-unknown-none-elf/debug/init initrd/bin/init
+    python mkfs.py initrd initrd.img
     cargo run --bin servos

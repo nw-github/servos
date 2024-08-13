@@ -16,13 +16,11 @@
 use alloc::{boxed::Box, vec};
 use core::{
     arch::asm,
-    ffi::CStr,
     mem::MaybeUninit,
     ops::Range,
     ptr::{addr_of, addr_of_mut},
     sync::atomic::AtomicUsize,
 };
-use elf::{ElfFile, SHN_UNDEF};
 use fdt_rs::{
     base::{DevTree, DevTreeNode},
     prelude::{FallibleIterator, PropReader},
@@ -31,13 +29,14 @@ use fs::{
     initrd::InitRd,
     path::Path,
     vfs::{Vfs, VFS},
-    FileSystem, OpenFlags,
+    OpenFlags,
 };
 use hart::{get_hart_info, HartInfo, PowerManagement, HART_INFO, HART_STACK_LEN, MAX_HARTS, POWER};
 use plic::PLIC;
 use proc::{Process, Scheduler, USER_TRAP_FRAME};
 use servos::{
     drivers::{Ns16550a, Syscon},
+    elf::ElfFile,
     heap::BlockAlloc,
     lock::SpinLocked,
     riscv::{self, disable_intr, r_satp, r_tp},
@@ -48,7 +47,6 @@ use uart::{DebugIo, CONS};
 use vmm::{PageTable, Pte, PGSIZE};
 
 mod dump_fdt;
-mod elf;
 mod fs;
 mod hart;
 mod plic;
@@ -378,7 +376,6 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
         init_vmem();
         init_harts();
 
-        Process::spawn_from_function(init_user_mode).expect("couldn't create process");
         // dump_fdt::dump_tree(dt).unwrap();
 
         _start_hart(hartid, PageTable::make_satp(addr_of!(KPAGETABLE)))
@@ -389,27 +386,29 @@ extern "C" fn kinithart(hartid: usize) -> ! {
     println!("Hello world from hart {hartid}: sp: {}", get_hart_info().sp);
 
     if BOOT_HART.load(core::sync::atomic::Ordering::SeqCst) == hartid {
-        static FILE: &[u8] = include_bytes!("../../out.img");
+        static FILE: &[u8] = include_bytes!("../../initrd.img");
         _ = VFS.lock().mount(
             Path::new("/").try_into().unwrap(),
             InitRd::new(FILE).unwrap(),
         );
 
-        let mut buf = vec![0; 0x5000];
-        let file = Vfs::open("/init", OpenFlags::empty()).unwrap();
-        let read = file.read(0, &mut buf).unwrap();
-        buf.truncate(read);
-
-        let file = ElfFile::new(&buf).unwrap();
-        println!("Program headers: ");
-        for ph in file.pheaders.iter() {
-            println!("{ph:?}");
+        const GROW_SZ: usize = 0x1000;
+        let file = Vfs::open("/bin/init", OpenFlags::empty()).unwrap();
+        let mut buf = vec![0; GROW_SZ];
+        let mut pos = 0usize;
+        while let Ok(read) = file.read(pos as u64, &mut buf[pos..]) {
+            if read == 0 {
+                break;
+            } else if read < GROW_SZ {
+                buf.truncate(buf.len() + (GROW_SZ - read));
+                break;
+            }
+            pos += GROW_SZ;
+            buf.resize(buf.len() + GROW_SZ, 0);
         }
 
-        println!("Section headers: ");
-        for sh in file.sheaders.iter() {
-            println!("Name: {:?}\n\t{sh:?}", sh.name(&file));
-        }
+        let file = ElfFile::new(&buf).expect("/bin/init isn't a compatible ELF file");
+        Process::spawn(&file).expect("couldn't spawn init process");
     }
 
     // ask for PLIC interrupts

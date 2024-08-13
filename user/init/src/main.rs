@@ -21,8 +21,17 @@ fn syscall(no: usize, a0: usize, a1: usize, a2: usize) -> isize {
     result
 }
 
-pub fn _start() {
-    syscall(1, 0, 0, 0);
+static mut GLOBAL_STATIC: usize = 5;
+
+#[no_mangle]
+pub extern "C" fn _start() {
+    unsafe {
+        while GLOBAL_STATIC != 0 {
+            GLOBAL_STATIC -= 1;
+        }
+    }
+
+    syscall(1, unsafe { GLOBAL_STATIC }, 0, 0);
 
     loop {}
 }

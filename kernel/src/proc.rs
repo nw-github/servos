@@ -8,11 +8,12 @@ use crate::{
     fs::vfs::FileRef,
     hart::get_hart_info,
     trap::{self, USER_TRAP_VEC},
-    vmm::{self, Page, PageTable, PhysAddr, Pte, VirtAddr, PGSIZE},
+    vmm::{self, page_number, Page, PageTable, PhysAddr, Pte, VirtAddr, PGSIZE},
 };
 use alloc::{boxed::Box, collections::VecDeque};
 use servos::{
     arr::HoleArray,
+    elf::{ElfFile, PF_W, PF_X, PT_LOAD},
     lock::{Guard, SpinLocked},
     riscv::{enable_intr, r_tp},
 };
@@ -131,17 +132,17 @@ impl Process {
 
         let func = PhysAddr(func as usize);
         let mut pt = PageTable::try_alloc()?;
-        let mut trapframe_page = Page::alloc()?;
+        let mut trapframe_page = Page::zeroed()?;
         let trapframe = &mut *trapframe_page as *mut _ as *mut TrapFrame;
         if !trap::map_trap_code(&mut pt)
             || !pt.map_owned_page(trapframe_page, USER_TRAP_FRAME, Pte::Rw)
-            || !pt.map_owned_page(Page::alloc()?, VirtAddr(STACK_ADDR), Pte::Urw)
+            || !pt.map_owned_page(Page::uninit()?, VirtAddr(STACK_ADDR), Pte::Urw)
             || !pt.map_page(func, VirtAddr(ENTRY_ADDR), Pte::Urx)
         {
             return None;
         }
 
-        let proc = unsafe {
+        Self::enqueue_process(unsafe {
             let proc = ProcessNode(NonNull::new_unchecked(Box::into_raw(
                 Box::try_new(SpinLocked::new(Process {
                     pid: NEXTPID.fetch_add(1, Ordering::Relaxed),
@@ -163,19 +164,93 @@ impl Process {
             (*trapframe).regs[Reg::SP as usize] = STACK_ADDR + PGSIZE;
 
             proc
-        };
+        })
+        .then_some(())
+    }
 
-        let mut proc_list = PROC_LIST.lock();
-        if !try_push_back(&mut proc_list, proc) {
-            unsafe { proc.free() };
-            None
-        } else if !Scheduler::take(proc) {
-            proc_list.pop_back();
-            unsafe { proc.free() };
-            None
-        } else {
-            Some(())
+    pub fn spawn(file: &ElfFile) -> Option<()> {
+        let mut pt = PageTable::try_alloc()?;
+        let mut trapframe_page = Page::zeroed()?;
+        let trapframe = &mut *trapframe_page as *mut _ as *mut TrapFrame;
+        if !trap::map_trap_code(&mut pt)
+            || !pt.map_owned_page(trapframe_page, USER_TRAP_FRAME, Pte::Rw)
+        {
+            return None;
         }
+
+        let mut highest_va = 0;
+        for phdr in file.pheaders.iter() {
+            if phdr.typ != PT_LOAD {
+                continue;
+            } else if phdr.memsz < phdr.filesz {
+                return None;
+            }
+
+            let mut perms = Pte::U | Pte::R;
+            if phdr.flags & PF_W != 0 {
+                perms |= Pte::W;
+            }
+            if phdr.flags & PF_X != 0 {
+                perms |= Pte::X;
+            }
+            let base = phdr.vaddr as usize;
+            highest_va = highest_va.max(base);
+            let [first, last] = [
+                page_number(base),
+                page_number(base.wrapping_add(phdr.memsz as usize) - 1),
+            ];
+            if last < first {
+                return None;
+            }
+
+            // this is all somewhat suboptimal
+            for page in (first..=last).step_by(PGSIZE) {
+                if !pt.map_owned_page(Page::zeroed()?, VirtAddr(page), perms) {
+                    return None;
+                }
+            }
+
+            if !VirtAddr(base).ucopy_to(
+                &pt,
+                &file.raw[phdr.offset as usize..][..phdr.filesz as usize],
+                Some(Pte::empty()),
+            ) {
+                return None;
+            }
+        }
+
+        // allocate 1MiB of stack
+        let stack_top = page_number(highest_va) + PGSIZE;
+        for page in (stack_top + PGSIZE..=stack_top + 0x100000 + PGSIZE).step_by(PGSIZE) {
+            if !pt.map_owned_page(Page::uninit()?, VirtAddr(page), Pte::Urw) {
+                return None;
+            }
+        }
+
+        Self::enqueue_process(unsafe {
+            let proc = ProcessNode(NonNull::new_unchecked(Box::into_raw(
+                Box::try_new(SpinLocked::new(Process {
+                    pid: NEXTPID.fetch_add(1, Ordering::Relaxed),
+                    pagetable: pt,
+                    trapframe,
+                    status: ProcStatus::Idle,
+                    killed: false,
+                    files: HoleArray::empty(),
+                }))
+                .ok()?,
+            )));
+
+            (*trapframe).proc = proc;
+            (*trapframe).handle_trap = trap::handle_u_trap;
+            (*trapframe).ksatp = PageTable::make_satp(addr_of!(crate::KPAGETABLE));
+            (*trapframe).ksp = core::ptr::null_mut();
+            (*trapframe).hartid = 0;
+            (*trapframe).regs[Reg::PC as usize] = file.ehdr.entry as usize;
+            (*trapframe).regs[Reg::SP as usize] = stack_top;
+
+            proc
+        })
+        .then_some(())
     }
 
     pub unsafe fn return_into(mut this: Guard<Process>) -> ! {
@@ -185,6 +260,20 @@ impl Process {
             (*this.trapframe).hartid = r_tp();
             (*this.trapframe).ksp = get_hart_info().sp.0 as *mut u8;
             trap::return_to_user(Guard::drop_and_keep_token(this), satp)
+        }
+    }
+
+    fn enqueue_process(proc: ProcessNode) -> bool {
+        let mut proc_list = PROC_LIST.lock();
+        if !try_push_back(&mut proc_list, proc) {
+            unsafe { proc.free() };
+            false
+        } else if !Scheduler::take(proc) {
+            proc_list.pop_back();
+            unsafe { proc.free() };
+            false
+        } else {
+            true
         }
     }
 }

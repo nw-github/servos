@@ -207,7 +207,7 @@ impl PageTable {
                     };
                     *entry = PageTableEntry::new(next.into(), 0);
                     pt = unsafe { &mut *next };
-                } 
+                }
             }
         }
 
@@ -272,9 +272,10 @@ impl VirtAddr {
 
     /// Copy all of `buf` into address `self` in page table `pt`. Fails if any pages are not
     /// writable or accessible from user mode. May fail after a partial write.
-    pub fn ucopy_to(mut self, pt: &PageTable, mut buf: &[u8]) -> bool {
+    pub fn ucopy_to(mut self, pt: &PageTable, mut buf: &[u8], perms: Option<Pte>) -> bool {
+        let perms = perms.unwrap_or(Pte::U | Pte::W);
         while !buf.is_empty() {
-            let Some(phys) = self.to_phys(pt, Pte::U | Pte::W) else {
+            let Some(phys) = self.to_phys(pt, perms) else {
                 return false;
             };
 
@@ -373,8 +374,14 @@ impl<T> From<NonNull<T>> for PhysAddr {
 pub struct Page(pub [u8; PGSIZE]);
 
 impl Page {
-    pub fn alloc() -> Option<Box<Page>> {
+    pub fn zeroed() -> Option<Box<Page>> {
         Box::try_new_zeroed()
+            .map(|page| unsafe { page.assume_init() })
+            .ok()
+    }
+
+    pub fn uninit() -> Option<Box<Page>> {
+        Box::try_new_uninit()
             .map(|page| unsafe { page.assume_init() })
             .ok()
     }
