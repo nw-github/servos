@@ -12,3 +12,13 @@ bitflags! {
         const Truncate = 1 << 3;
     }
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DirEntry {
+    pub name: [u8; 0x100],
+    pub name_len: usize,
+    pub size: usize,
+    pub readonly: bool,
+    pub directory: bool,
+}

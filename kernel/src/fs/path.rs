@@ -23,15 +23,17 @@ impl Path {
     }
 
     pub fn strip_prefix(&self, rhs: impl AsRef<Path>) -> Option<&Path> {
-        iter_after(self.components(), rhs.as_ref().components()).and_then(|mut c| {
+        iter_after(self.components(), rhs.as_ref().components()).map(|mut c| {
             // TODO: fix this incredibly stupid hack
-            let next = c.next()?;
-            Some(Path::new(unsafe {
+            let Some(next) = c.next() else {
+                return Path::new("");
+            };
+            Path::new(unsafe {
                 core::slice::from_ptr_range(Range {
                     start: next.as_ptr(),
                     end: c.last().unwrap_or(next).as_ptr_range().end,
                 })
-            }))
+            })
         })
     }
 

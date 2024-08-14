@@ -1,12 +1,12 @@
 use alloc::{sync::Arc, vec::Vec};
-use shared::io::OpenFlags;
+use shared::io::{DirEntry, OpenFlags};
 
 use crate::dev::Device;
 
 use super::{
     path::{OwnedPath, Path},
     vfs::MountError,
-    DirEntry, FileSystem, FsError, FsResult, VNode,
+    FileSystem, FsError, FsResult, VNode,
 };
 
 pub struct DeviceFs {
@@ -75,7 +75,7 @@ impl FileSystem for DeviceFs {
         Ok(())
     }
 
-    fn get_dir_entry(&self, vn: &VNode, pos: usize) -> FsResult<Option<DirEntry>> {
+    fn readdir(&self, vn: &VNode, pos: usize) -> FsResult<Option<DirEntry>> {
         if !vn.directory {
             return Err(FsError::InvalidOp);
         }
@@ -86,6 +86,8 @@ impl FileSystem for DeviceFs {
                 name: [0; 256],
                 name_len: name.len(),
                 directory: false,
+                size: 0,
+                readonly: false,
             };
             dir.name[..name.len()].copy_from_slice(name);
             Ok(Some(dir))

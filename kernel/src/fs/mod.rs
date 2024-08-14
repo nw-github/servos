@@ -1,5 +1,5 @@
 use path::Path;
-use shared::io::OpenFlags;
+use shared::io::{DirEntry, OpenFlags};
 
 use crate::vmm::{PageTable, Pte, VirtAddr, VirtToPhysErr};
 
@@ -34,19 +34,13 @@ pub struct VNode {
     readonly: bool,
 }
 
-pub struct DirEntry {
-    pub name: [u8; 0x100],
-    pub name_len: usize,
-    pub directory: bool,
-}
-
 pub trait FileSystem {
     /// Open a path. `path` should be the components after the mount point
     fn open(&self, path: &Path, flags: OpenFlags) -> FsResult<VNode>;
     fn read(&self, vn: &VNode, pos: u64, buf: &mut [u8]) -> FsResult<usize>;
     fn write(&self, vn: &VNode, pos: u64, buf: &[u8]) -> FsResult<usize>;
     fn close(&self, vn: &VNode) -> FsResult<()>;
-    fn get_dir_entry(&self, vn: &VNode, pos: usize) -> FsResult<Option<DirEntry>>;
+    fn readdir(&self, vn: &VNode, pos: usize) -> FsResult<Option<DirEntry>>;
 
     fn read_va(
         &self,

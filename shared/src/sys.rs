@@ -10,6 +10,7 @@ pub enum Sys {
     Close,
     Read,
     Write,
+    Readdir,
 }
 
 #[derive(strum::FromRepr, Debug, Clone, Copy, PartialEq, Eq)]

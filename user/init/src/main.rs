@@ -19,6 +19,31 @@ static mut GLOBAL_STATIC: usize = 5;
 #[link_section = ".bss"]
 static ZEROED: [u8; 0x2000] = [0; 0x2000];
 
+fn printdir(dir: impl AsRef<[u8]>, mut tabs: usize) {
+    let dir = dir.as_ref();
+    let Ok(fd) = sys::open(dir, OpenFlags::empty()) else {
+        return;
+    };
+
+    (0..tabs).for_each(|_| print!("   "));
+    tabs += 1;
+
+    println!("{}", core::str::from_utf8(dir).unwrap());
+    while let Ok(Some(ent)) = sys::readdir(fd, usize::MAX) {
+        (0..tabs).for_each(|_| print!("   "));
+        let name = core::str::from_utf8(&ent.name[..ent.name_len]).unwrap();
+        if ent.directory {
+            println!("[D] {name}");
+        } else {
+            println!(
+                "[F] {name} ({} bytes{})",
+                ent.size,
+                if ent.readonly { ", readonly" } else { "" }
+            );
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn _start() {
     // open stdout and stdin
@@ -36,24 +61,30 @@ pub extern "C" fn _start() {
 
     {
         let fd = sys::open("/1001_A.txt", OpenFlags::empty()).unwrap();
-        print!("page boundary read cross test (fd {fd}): ");
+        print!("page boundary read cross test (fd {fd:?}): ");
 
         let mut buf = ZEROED;
         assert_eq!(buf.iter().map(|&p| p as usize).sum::<usize>(), 0);
 
         let read = sys::read(fd, 0, &mut buf).unwrap();
         assert_eq!(read, 0x1001);
-        assert_eq!(buf.iter().map(|&p| p as usize).sum::<usize>(), b'A' as usize * 0x1001);
+        assert_eq!(
+            buf.iter().map(|&p| p as usize).sum::<usize>(),
+            b'A' as usize * 0x1001
+        );
 
         _ = sys::close(fd);
-        assert_eq!(sys::read(fd, 0, &mut buf), Err(shared::sys::SysError::BadFd));
+        assert_eq!(
+            sys::read(fd, 0, &mut buf),
+            Err(shared::sys::SysError::BadFd)
+        );
 
         println!("GOOD");
     }
 
     {
         let fd = sys::open("/test.txt", OpenFlags::empty()).unwrap();
-        println!("file cursor test (fd {fd}): ");
+        println!("file cursor test (fd {fd:?}): ");
 
         let mut buf = [0; 8];
         loop {
@@ -66,6 +97,9 @@ pub extern "C" fn _start() {
 
         _ = sys::close(fd);
     }
+
+    printdir("/", 1);
+    printdir("/dev", 2);
 
     _ = sys::shutdown(false).unwrap();
 }

@@ -326,6 +326,19 @@ impl VirtAddr {
         Ok(())
     }
 
+    pub fn copy_struct_to<T: Copy>(
+        self,
+        pt: &PageTable,
+        buf: &T,
+        perms: Option<Pte>,
+    ) -> Result<(), VirtToPhysErr> {
+        // check align?
+        let s = unsafe {
+            core::slice::from_raw_parts(buf as *const T as *const u8, core::mem::size_of::<T>())
+        };
+        self.copy_to(pt, s, perms)
+    }
+
     pub fn iter_phys(self, pt: &PageTable, size: usize, perms: Pte) -> PhysIter {
         PhysIter {
             va: self,

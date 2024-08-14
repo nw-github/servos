@@ -130,6 +130,24 @@ fn sys_write(proc: ProcessNode, fd: usize, pos: usize, buf: VirtAddr, buflen: us
     }
 }
 
+// bool readdir(uint fd, uint pos, DirEntry *entry);
+fn sys_readdir(proc: ProcessNode, fd: usize, pos: usize, entry: VirtAddr) -> SysResult {
+    unsafe {
+        proc.with(|proc| {
+            let Some(fd) = proc.files.get(fd).and_then(|f| f.as_ref()) else {
+                return Err(SysError::BadFd);
+            };
+
+            let Some(ent) = fd.readdir(pos)? else {
+                return Ok(0);
+            };
+
+            entry.copy_struct_to(&proc.pagetable, &ent, None)?;
+            Ok(1)
+        })
+    }
+}
+
 pub fn handle_syscall(proc: ProcessNode) {
     let (syscall_no, a0, a1, a2, a3) = unsafe {
         proc.with(|proc| {
@@ -151,6 +169,7 @@ pub fn handle_syscall(proc: ProcessNode) {
         Some(Sys::Close) => sys_close(proc, a0),
         Some(Sys::Read) => sys_read(proc, a0, a1, VirtAddr(a2), a3),
         Some(Sys::Write) => sys_write(proc, a0, a1, VirtAddr(a2), a3),
+        Some(Sys::Readdir) => sys_readdir(proc, a0, a1, VirtAddr(a2)),
         None => Err(SysError::InvalidSyscall),
     };
 

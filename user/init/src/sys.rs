@@ -1,6 +1,13 @@
-use core::convert::Infallible;
+use core::{convert::Infallible, mem::MaybeUninit};
 
-use shared::{io::OpenFlags, sys::{Sys, SysError}};
+use shared::{
+    io::{DirEntry, OpenFlags},
+    sys::{Sys, SysError},
+};
+
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawFd(pub usize);
 
 pub fn syscall(no: Sys, a0: usize, a1: usize, a2: usize, a3: usize) -> Result<usize, SysError> {
     let (result, err): (usize, usize);
@@ -27,8 +34,8 @@ pub fn shutdown(restart: bool) -> Result<Infallible, SysError> {
     Err(syscall(Sys::Shutdown, restart as usize, 0, 0, 0).unwrap_err())
 }
 
-pub fn close(fd: usize) -> Result<(), SysError> {
-    syscall(Sys::Close, fd, 0, 0, 0).map(|_| ())
+pub fn close(fd: RawFd) -> Result<(), SysError> {
+    syscall(Sys::Close, fd.0, 0, 0, 0).map(|_| ())
 }
 
 pub fn kill(pid: usize) -> Result<(), SysError> {
@@ -39,15 +46,43 @@ pub fn getpid() -> usize {
     syscall(Sys::GetPid, 0, 0, 0, 0).unwrap() as usize
 }
 
-pub fn open(path: impl AsRef<[u8]>, flags: OpenFlags) -> Result<usize, SysError> {
+pub fn open(path: impl AsRef<[u8]>, flags: OpenFlags) -> Result<RawFd, SysError> {
     let path = path.as_ref();
-    syscall(Sys::Open, path.as_ptr() as usize, path.len(), flags.bits() as usize, 0)
+    syscall(
+        Sys::Open,
+        path.as_ptr() as usize,
+        path.len(),
+        flags.bits() as usize,
+        0,
+    )
+    .map(RawFd)
 }
 
-pub fn read(fd: usize, pos: u64, buf: &mut [u8]) -> Result<usize, SysError> {
-    syscall(Sys::Read, fd, pos as usize, buf.as_mut_ptr() as usize, buf.len())
+pub fn read(fd: RawFd, pos: u64, buf: &mut [u8]) -> Result<usize, SysError> {
+    syscall(
+        Sys::Read,
+        fd.0,
+        pos as usize,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+    )
 }
 
-pub fn write(fd: usize, pos: u64, buf: &[u8]) -> Result<usize, SysError> {
-    syscall(Sys::Write, fd, pos as usize, buf.as_ptr() as usize, buf.len())
+pub fn write(fd: RawFd, pos: u64, buf: &[u8]) -> Result<usize, SysError> {
+    syscall(
+        Sys::Write,
+        fd.0,
+        pos as usize,
+        buf.as_ptr() as usize,
+        buf.len(),
+    )
+}
+
+pub fn readdir(fd: RawFd, pos: usize) -> Result<Option<DirEntry>, SysError> {
+    let mut entry = MaybeUninit::<DirEntry>::uninit();
+    if syscall(Sys::Readdir, fd.0, pos, entry.as_mut_ptr() as usize, 0)? == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(unsafe { entry.assume_init() }))
+    }
 }

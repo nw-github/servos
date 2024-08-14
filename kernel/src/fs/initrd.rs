@@ -1,9 +1,9 @@
 use core::mem::size_of;
 
 use alloc::{boxed::Box, vec::Vec};
-use shared::io::OpenFlags;
+use shared::io::{DirEntry, OpenFlags};
 
-use super::{path::Path, DirEntry, FileSystem, FsError, FsResult, VNode};
+use super::{path::Path, FileSystem, FsError, FsResult, VNode};
 
 pub const INITRD_MAGIC: u32 = 0xce3fdefe;
 
@@ -87,10 +87,6 @@ impl InitRd {
 
 impl FileSystem for InitRd {
     fn open(&self, path: &Path, _flags: OpenFlags) -> FsResult<VNode> {
-        if path.is_empty() {
-            return Err(FsError::PathNotFound);
-        }
-
         let mut ino = 0;
         'outer: for component in path.components() {
             if self.inodes[ino].typ != INODE_DIR {
@@ -112,7 +108,7 @@ impl FileSystem for InitRd {
 
         Ok(VNode {
             ino: ino as u64,
-            directory: false,
+            directory: self.inodes[ino].typ == INODE_DIR,
             readonly: true,
         })
     }
@@ -141,7 +137,7 @@ impl FileSystem for InitRd {
         Ok(())
     }
 
-    fn get_dir_entry(&self, vn: &VNode, pos: usize) -> FsResult<Option<DirEntry>> {
+    fn readdir(&self, vn: &VNode, pos: usize) -> FsResult<Option<DirEntry>> {
         let dir = self.vnode_to_inode(vn)?;
         if dir.typ != INODE_DIR {
             return Err(FsError::InvalidOp);
@@ -155,6 +151,8 @@ impl FileSystem for InitRd {
             name: [0; 0x100],
             name_len: inode.nlen as usize,
             directory: inode.typ == dir.typ,
+            readonly: true,
+            size: inode.size as usize,
         };
         entry.name[..inode.name.len()].copy_from_slice(&inode.name);
 

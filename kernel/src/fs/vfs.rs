@@ -64,13 +64,13 @@ impl FileDescriptor {
         self.exec_with_pos(pos, |pos| self.dev.write(&self.node, pos, buf))
     }
 
-    pub fn get_dir_entry(&self, cur: usize) -> FsResult<Option<DirEntry>> {
+    pub fn readdir(&self, cur: usize) -> FsResult<Option<DirEntry>> {
         if cur == usize::MAX {
-            let res = self.dev.get_dir_entry(&self.node, self.pos.get() as usize);
+            let res = self.dev.readdir(&self.node, self.pos.get() as usize);
             self.pos.update(|pos| pos + 1);
             res
         } else {
-            self.dev.get_dir_entry(&self.node, cur)
+            self.dev.readdir(&self.node, cur)
         }
     }
 
