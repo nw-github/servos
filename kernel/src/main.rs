@@ -13,11 +13,10 @@
 #![feature(slice_from_ptr_range)]
 #![feature(ptr_sub_ptr)]
 #![feature(cell_update)]
+#![feature(maybe_uninit_slice)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use alloc::{sync::Arc, vec};
-use dev::{console::Console, null::NullDevice};
-use shared::io::OpenFlags;
+use alloc::sync::Arc;
 use core::{
     alloc::Allocator,
     arch::asm,
@@ -26,6 +25,7 @@ use core::{
     ptr::{addr_of, addr_of_mut},
     sync::atomic::AtomicUsize,
 };
+use dev::{console::Console, null::NullDevice};
 use fdt_rs::{
     base::{DevTree, DevTreeNode},
     prelude::{FallibleIterator, PropReader},
@@ -41,13 +41,13 @@ use plic::PLIC;
 use proc::{Process, Scheduler, USER_TRAP_FRAME};
 use servos::{
     drivers::{Ns16550a, Syscon},
-    elf::ElfFile,
     heap::BlockAlloc,
     lock::SpinLocked,
     riscv::{self, disable_intr, r_satp, r_tp},
     sbi::{self, hsm::HartState},
     Align16,
 };
+use shared::io::OpenFlags;
 use uart::{DebugIo, CONS};
 use vmm::{Page, PageTable, Pte};
 
@@ -417,24 +417,8 @@ extern "C" fn kinithart(hartid: usize) -> ! {
                 .unwrap();
         }
 
-        const GROW_SZ: usize = 0x1000;
-        let file = Vfs::open("/bin/init", OpenFlags::empty()).unwrap();
-        let mut buf = vec![0; GROW_SZ];
-        let mut pos = 0usize;
-        while let Ok(read) = file.read(u64::MAX, &mut buf[pos..]) {
-            if read == 0 {
-                break;
-            } else if read < GROW_SZ {
-                buf.truncate(buf.len() + (GROW_SZ - read));
-                break;
-            }
-            pos += GROW_SZ;
-            buf.resize(buf.len() + GROW_SZ, 0);
-        }
-
-        let file = ElfFile::new(&buf).expect("/bin/init isn't a compatible ELF file");
         let root = Vfs::open("/", OpenFlags::empty()).unwrap();
-        Process::spawn(&file, root).expect("couldn't spawn init process");
+        Process::spawn(Path::new("/bin/init"), root, &[]).expect("couldn't spawn init process");
     }
 
     // ask for PLIC interrupts

@@ -18,6 +18,12 @@ bitflags! {
 pub struct DirEntry {
     pub name: [u8; 0x100],
     pub name_len: usize,
+    pub stat: Stat,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Stat {
     pub size: usize,
     pub readonly: bool,
     pub directory: bool,

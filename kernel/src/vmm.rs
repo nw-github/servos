@@ -326,7 +326,7 @@ impl VirtAddr {
         Ok(())
     }
 
-    pub fn copy_struct_to<T: Copy>(
+    pub fn copy_type_to<T: Copy>(
         self,
         pt: &PageTable,
         buf: &T,

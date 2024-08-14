@@ -1,7 +1,7 @@
-use core::mem::size_of;
+use core::mem::{size_of, MaybeUninit};
 
 use alloc::{boxed::Box, vec::Vec};
-use shared::io::{DirEntry, OpenFlags};
+use shared::io::{DirEntry, OpenFlags, Stat};
 
 use super::{path::Path, FileSystem, FsError, FsResult, VNode};
 
@@ -68,7 +68,7 @@ impl InitRd {
         })
     }
 
-    pub fn dir_entry(&self, dir: &INode, pos: usize) -> Option<(usize, &INode)> {
+    fn dir_entry(&self, dir: &INode, pos: usize) -> Option<(usize, &INode)> {
         const U64SZ: usize = size_of::<u64>();
         if pos >= dir.size as usize {
             return None;
@@ -80,14 +80,25 @@ impl InitRd {
         Some((entry, self.inodes.get(entry)?))
     }
 
-    pub fn vnode_to_inode(&self, vn: &VNode) -> FsResult<&INode> {
+    fn vnode_to_inode(&self, vn: &VNode) -> FsResult<&INode> {
         self.inodes.get(vn.ino as usize).ok_or(FsError::CorruptedFs)
+    }
+
+    fn stat_inode(inode: &INode) -> Stat {
+        Stat {
+            size: inode.size as usize,
+            readonly: true,
+            directory: inode.typ == INODE_DIR,
+        }
     }
 }
 
 impl FileSystem for InitRd {
     fn open(&self, path: &Path, _flags: OpenFlags, root: Option<&VNode>) -> FsResult<VNode> {
-        let mut ino = root.filter(|_| !path.is_absolute()).map(|r| r.ino as usize).unwrap_or(0);
+        let mut ino = root
+            .filter(|_| !path.is_absolute())
+            .map(|r| r.ino as usize)
+            .unwrap_or(0);
         'outer: for component in path.components() {
             if self.inodes[ino].typ != INODE_DIR {
                 return Err(FsError::PathNotFound);
@@ -113,20 +124,30 @@ impl FileSystem for InitRd {
         })
     }
 
-    fn read(&self, vn: &VNode, pos: u64, buf: &mut [u8]) -> FsResult<usize> {
+    fn read<'a>(
+        &self,
+        vn: &VNode,
+        pos: u64,
+        buf: &'a mut [MaybeUninit<u8>],
+    ) -> FsResult<&'a mut [u8]> {
         let inode = self.vnode_to_inode(vn)?;
         if inode.typ == INODE_DIR {
             return Err(FsError::InvalidOp);
         }
 
         let Some(len) = (inode.size as u64).checked_sub(pos) else {
-            return Ok(0);
+            return Ok(&mut []);
         };
 
         let len = buf.len().min(len as usize);
-        // maybe do an unchecked copy for speed
-        buf[..len].copy_from_slice(&self.data[inode.addr as usize + pos as usize..][..len]);
-        Ok(len)
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                self.data[inode.addr as usize + pos as usize..][..len].as_ptr(),
+                buf.as_mut_ptr().cast(),
+                len,
+            );
+        }
+        Ok(unsafe { MaybeUninit::slice_assume_init_mut(&mut buf[..len]) })
     }
 
     fn write(&self, _vn: &VNode, _pos: u64, _buf: &[u8]) -> FsResult<usize> {
@@ -150,13 +171,19 @@ impl FileSystem for InitRd {
         let mut entry = DirEntry {
             name: [0; 0x100],
             name_len: inode.nlen as usize,
-            directory: inode.typ == dir.typ,
-            readonly: true,
-            size: inode.size as usize,
+            stat: Self::stat_inode(inode),
         };
         entry.name[..inode.name.len()].copy_from_slice(&inode.name);
 
         Ok(Some(entry))
+    }
+
+    fn stat(&self, vn: &VNode) -> FsResult<Stat> {
+        Ok(Self::stat_inode(
+            self.inodes
+                .get(vn.ino as usize)
+                .ok_or(FsError::CorruptedFs)?,
+        ))
     }
 }
 

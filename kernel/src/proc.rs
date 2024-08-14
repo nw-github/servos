@@ -5,19 +5,22 @@ use core::{
 };
 
 use crate::{
-    fs::vfs::Fd,
+    fs::{
+        path::Path,
+        vfs::{Fd, Vfs},
+    },
     hart::get_hart_info,
     trap::{self, USER_TRAP_VEC},
     vmm::{Page, PageTable, Pte, VirtAddr},
 };
-use alloc::{boxed::Box, collections::VecDeque};
+use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
 use servos::{
     arr::HoleArray,
     elf::{ElfFile, PF_W, PF_X, PT_LOAD},
     lock::{Guard, SpinLocked},
     riscv::{enable_intr, r_tp},
 };
-use shared::sys::SysError;
+use shared::{io::OpenFlags, sys::SysError};
 
 static NEXTPID: AtomicU32 = AtomicU32::new(0);
 
@@ -128,7 +131,16 @@ pub struct Process {
 pub const USER_TRAP_FRAME: VirtAddr = VirtAddr(USER_TRAP_VEC.0 - Page::SIZE);
 
 impl Process {
-    pub fn spawn(file: &ElfFile, cwd: Fd) -> Result<(), SysError> {
+    pub fn spawn(path: &Path, cwd: Fd, args: &[&[u8]]) -> Result<(), SysError> {
+        let file = Vfs::open(path, OpenFlags::empty())?;
+        let stat = file.stat()?;
+        let Ok(mut buf) = Vec::try_with_capacity(stat.size) else {
+            return Err(SysError::NoMem);
+        };
+        let Some(file) = ElfFile::new(file.read(u64::MAX, buf.spare_capacity_mut())?) else {
+            return Err(SysError::InvalidArgument);
+        };
+
         let mut pt = PageTable::try_alloc()?;
         let mut trapframe_page = Page::zeroed()?;
         let trapframe = &mut *trapframe_page as *mut _ as *mut TrapFrame;
@@ -177,9 +189,27 @@ impl Process {
         _ = highest_va; // heap
 
         // allocate 1MiB of stack
-        const SP: usize = USER_TRAP_FRAME.0 - Page::SIZE;
-        if !pt.map_new_pages(VirtAddr(SP - 0x100000), 0x100000, Pte::Urw) {
+        let mut sp: usize = USER_TRAP_FRAME.0 - Page::SIZE;
+        if !pt.map_new_pages(VirtAddr(sp - 0x100000), 0x100000, Pte::Urw) {
             return Err(SysError::NoMem);
+        }
+
+        let mut ptrs = Vec::new();
+        for arg in core::iter::once(path.as_ref()).chain(args.iter().cloned()) {
+            // stack is already zeroed, so just add 1 for the null terminator
+            sp -= arg.len() + 1;
+            VirtAddr(sp).copy_to(&pt, arg, None)?;
+
+            if ptrs.try_reserve(1).is_err() {
+                return Err(SysError::NoMem);
+            }
+            ptrs.push(sp);
+        }
+
+        sp -= sp % core::mem::align_of::<usize>();
+        for &arg in ptrs.iter().rev() {
+            sp -= core::mem::size_of::<usize>();
+            VirtAddr(sp).copy_type_to(&pt, &arg, None)?;
         }
 
         let success = Self::enqueue_process(unsafe {
@@ -201,7 +231,9 @@ impl Process {
             (*trapframe).ksp = core::ptr::null_mut();
             (*trapframe).hartid = 0;
             (*trapframe).regs[Reg::PC as usize] = file.ehdr.entry as usize;
-            (*trapframe).regs[Reg::SP as usize] = SP;
+            (*trapframe).regs[Reg::SP as usize] = sp;
+            (*trapframe).regs[Reg::A0 as usize] = args.len() + 1;
+            (*trapframe).regs[Reg::A1 as usize] = sp;
 
             proc
         });

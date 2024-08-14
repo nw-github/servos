@@ -82,11 +82,10 @@ fn sys_open(proc: ProcessNode, path: VirtAddr, len: usize, flags: u32) -> SysRes
             buf.set_len(len);
 
             let file = Vfs::open_in_cwd(&proc.cwd, &buf[..], OpenFlags::from_bits_truncate(flags))?;
-            proc
-            .files
-            .push(file)
-            .map(|v| v.0)
-            .map_err(|_| SysError::NoMem)
+            proc.files
+                .push(file)
+                .map(|v| v.0)
+                .map_err(|_| SysError::NoMem)
         })
     }
 }
@@ -142,7 +141,7 @@ fn sys_readdir(proc: ProcessNode, fd: usize, pos: usize, entry: VirtAddr) -> Sys
                 return Ok(0);
             };
 
-            entry.copy_struct_to(&proc.pagetable, &ent, None)?;
+            entry.copy_type_to(&proc.pagetable, &ent, None)?;
             Ok(1)
         })
     }

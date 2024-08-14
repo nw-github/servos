@@ -1,10 +1,11 @@
-use core::cell::Cell;
+use core::{cell::Cell, mem::MaybeUninit};
 
 use alloc::{
     collections::{btree_map::Entry, BTreeMap},
     sync::Arc,
 };
 use servos::lock::SpinLocked;
+use shared::io::Stat;
 
 use crate::{
     fs::FsError,
@@ -32,12 +33,16 @@ impl Fd {
         }
     }
 
-    pub fn read(&self, pos: u64, buf: &mut [u8]) -> FsResult<usize> {
+    pub fn read<'a>(&self, pos: u64, buf: &'a mut [MaybeUninit<u8>]) -> FsResult<&'a mut [u8]> {
         if self.node.directory {
             return Err(FsError::InvalidOp);
         }
 
-        self.exec_with_pos(pos, |pos| self.dev.read(&self.node, pos, buf))
+        self.exec_with_pos_raw(pos, |pos| {
+            let res = self.dev.read(&self.node, pos, buf)?;
+            Ok((res.len(), res))
+        })
+        .map(|p| p.1)
     }
 
     pub fn read_va(&self, pos: u64, pt: &PageTable, va: VirtAddr, len: usize) -> FsResult<usize> {
@@ -78,12 +83,25 @@ impl Fd {
         &self.node
     }
 
+    pub fn stat(&self) -> FsResult<Stat> {
+        self.dev.stat(&self.node)
+    }
+
     fn exec_with_pos(&self, pos: u64, f: impl FnOnce(u64) -> FsResult<usize>) -> FsResult<usize> {
+        self.exec_with_pos_raw(pos, |pos| Ok((f(pos)?, ())))
+            .map(|v| v.0)
+    }
+
+    fn exec_with_pos_raw<T>(
+        &self,
+        pos: u64,
+        f: impl FnOnce(u64) -> FsResult<(usize, T)>,
+    ) -> FsResult<(usize, T)> {
         if pos == u64::MAX {
             let prev = self.pos.get();
-            let res = f(prev)?;
+            let (res, opaque) = f(prev)?;
             self.pos.update(|pos| pos + res as u64);
-            Ok(res)
+            Ok((res, opaque))
         } else {
             f(pos)
         }

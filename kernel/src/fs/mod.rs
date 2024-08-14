@@ -1,5 +1,7 @@
+use core::mem::MaybeUninit;
+
 use path::Path;
-use shared::io::{DirEntry, OpenFlags};
+use shared::io::{DirEntry, OpenFlags, Stat};
 
 use crate::vmm::{PageTable, Pte, VirtAddr, VirtToPhysErr};
 
@@ -36,10 +38,16 @@ pub struct VNode {
 
 pub trait FileSystem {
     fn open(&self, path: &Path, flags: OpenFlags, cwd: Option<&VNode>) -> FsResult<VNode>;
-    fn read(&self, vn: &VNode, pos: u64, buf: &mut [u8]) -> FsResult<usize>;
+    fn read<'a>(
+        &self,
+        vn: &VNode,
+        pos: u64,
+        buf: &'a mut [MaybeUninit<u8>],
+    ) -> FsResult<&'a mut [u8]>;
     fn write(&self, vn: &VNode, pos: u64, buf: &[u8]) -> FsResult<usize>;
     fn close(&self, vn: &VNode) -> FsResult<()>;
     fn readdir(&self, vn: &VNode, pos: usize) -> FsResult<Option<DirEntry>>;
+    fn stat(&self, vn: &VNode) -> FsResult<Stat>;
 
     fn read_va(
         &self,
@@ -50,7 +58,9 @@ pub trait FileSystem {
         len: usize,
     ) -> FsResult<usize> {
         rw_va(pos, pt, buf, len, Pte::U | Pte::W, |pos, buf| {
-            self.read(vn, pos, buf)
+            let buf_uninit =
+                unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr().cast(), buf.len()) };
+            self.read(vn, pos, buf_uninit).map(|v| v.len())
         })
     }
 

@@ -1,5 +1,7 @@
+use core::mem::MaybeUninit;
+
 use alloc::{sync::Arc, vec::Vec};
-use shared::io::{DirEntry, OpenFlags};
+use shared::io::{DirEntry, OpenFlags, Stat};
 
 use crate::dev::Device;
 
@@ -67,7 +69,12 @@ impl FileSystem for DeviceFs {
         })
     }
 
-    fn read(&self, vn: &VNode, pos: u64, buf: &mut [u8]) -> FsResult<usize> {
+    fn read<'a>(
+        &self,
+        vn: &VNode,
+        pos: u64,
+        buf: &'a mut [MaybeUninit<u8>],
+    ) -> FsResult<&'a mut [u8]> {
         self.devices[vn.ino as usize].1.read(pos, buf)
     }
 
@@ -89,14 +96,32 @@ impl FileSystem for DeviceFs {
             let mut dir = DirEntry {
                 name: [0; 256],
                 name_len: name.len(),
-                directory: false,
-                size: 0,
-                readonly: false,
+                stat: Stat {
+                    directory: false,
+                    size: 0,
+                    readonly: false,
+                },
             };
             dir.name[..name.len()].copy_from_slice(name);
             Ok(Some(dir))
         } else {
             Ok(None)
+        }
+    }
+
+    fn stat(&self, vn: &VNode) -> FsResult<Stat> {
+        if vn.directory {
+            Ok(Stat {
+                directory: true,
+                size: 0,
+                readonly: true,
+            })
+        } else {
+            Ok(Stat {
+                directory: false,
+                size: 0,
+                readonly: false,
+            })
         }
     }
 }
