@@ -1,5 +1,5 @@
 use servos::{
-    riscv::{r_sstatus, r_tp, w_sstatus, SSTATUS_SPIE, SSTATUS_SPP},
+    riscv::{r_sstatus, r_stval, r_tp, w_sstatus, SSTATUS_SPIE, SSTATUS_SPP},
     sbi,
 };
 
@@ -12,7 +12,7 @@ use crate::{
     },
     sys,
     uart::CONS,
-    vmm::{self, PageTable, Pte, VirtAddr, PGSIZE},
+    vmm::{self, Page, PageTable, Pte, VirtAddr},
 };
 
 const INTERRUPT_FLAG_BIT: usize = 1 << (usize::BITS - 1);
@@ -51,7 +51,7 @@ impl TrapCause {
     }
 }
 
-pub const USER_TRAP_VEC: VirtAddr = VirtAddr(VirtAddr::MAX.0 - PGSIZE);
+pub const USER_TRAP_VEC: VirtAddr = VirtAddr(VirtAddr::MAX.0 - Page::SIZE);
 pub const TIMER_INTERVAL: usize = 10_000_000;
 
 #[naked]
@@ -215,6 +215,24 @@ pub extern "C" fn handle_u_trap(mut sepc: usize, proc: ProcessNode) -> ! {
         Ok(TrapCause::EcallFromUMode) => {
             sys::handle_syscall(proc);
             sepc += 4;
+        }
+        Ok(
+            cause @ (TrapCause::LoadPageFault
+            | TrapCause::StorePageFault
+            | TrapCause::InstrPageFault),
+        ) => {
+            let pid = unsafe {
+                proc.with(|mut proc| {
+                    proc.killed = true;
+                    proc.pid
+                })
+            };
+
+            println!(
+                "PID {pid} page fault ({cause:?}) on hart {} at address {:#x}",
+                r_tp(),
+                r_stval(),
+            );
         }
         Ok(unk) => {
             let pid = unsafe {

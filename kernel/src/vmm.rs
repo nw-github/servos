@@ -1,6 +1,7 @@
-use core::{mem::MaybeUninit, ptr::NonNull};
+use core::{alloc::AllocError, mem::MaybeUninit, ops::Range, ptr::NonNull};
 
 use alloc::boxed::Box;
+use shared::sys::SysError;
 
 /// SATP register
 ///
@@ -41,8 +42,6 @@ bitflags::bitflags! {
         const Urwx = (1 << 4) | (1 << 1) | (1 << 2) | (1 << 3);
     }
 }
-
-pub const PGSIZE: usize = 0x1000;
 
 #[derive(Debug)]
 pub enum PteLink {
@@ -121,7 +120,7 @@ impl PageTableEntry {
     }
 }
 
-#[repr(C, align(0x1000))] // PGSIZE
+#[repr(C, align(0x1000))] // Page::SIZE
 pub struct PageTable([PageTableEntry; 512]);
 
 impl PageTable {
@@ -129,10 +128,8 @@ impl PageTable {
         PageTable([PageTableEntry(0); 512])
     }
 
-    pub fn try_alloc() -> Option<Box<PageTable>> {
-        Box::<PageTable>::try_new_zeroed()
-            .map(|ptr| unsafe { ptr.assume_init() })
-            .ok()
+    pub fn try_alloc() -> Result<Box<PageTable>, AllocError> {
+        Box::<PageTable>::try_new_zeroed().map(|ptr| unsafe { ptr.assume_init() })
     }
 
     /// Map a page that will be freed when the page table is dropped
@@ -160,12 +157,32 @@ impl PageTable {
     pub fn map_pages(&mut self, pa: PhysAddr, mut va: VirtAddr, size: usize, perms: Pte) -> bool {
         assert!(perms.intersects(Pte::Rwx));
         assert!(size != 0);
-        va.0 &= !(PGSIZE - 1);
+        va.0 = page_number(va.0);
 
         let [first, last] = [page_number(pa.0), page_number(pa.0.wrapping_add(size) - 1)];
-        assert!(first < VirtAddr::MAX.0 && last < VirtAddr::MAX.0);
-        for (i, page) in (first..=last).step_by(PGSIZE).enumerate() {
-            if !self.map_page_raw(PhysAddr(page), va + i * PGSIZE, perms) {
+        assert!(first < VirtAddr::MAX.0 && last < VirtAddr::MAX.0 && first <= last);
+        for (i, page) in (first..=last).step_by(Page::SIZE).enumerate() {
+            if !self.map_page_raw(PhysAddr(page), va + i * Page::SIZE, perms) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    pub fn map_new_pages(&mut self, va: VirtAddr, size: usize, perms: Pte) -> bool {
+        assert!(perms.intersects(Pte::Rwx));
+        assert!(size != 0);
+
+        let [first, last] = [page_number(va.0), page_number(va.0.wrapping_add(size) - 1)];
+        if !(first < VirtAddr::MAX.0 && last < VirtAddr::MAX.0 && first <= last) {
+            return false;
+        }
+        for page in (first..=last).step_by(Page::SIZE) {
+            let Ok(pa) = Page::uninit() else {
+                return false;
+            };
+            if !self.map_page_raw(Box::into_raw(pa).into(), VirtAddr(page), perms | Pte::Owned) {
                 return false;
             }
         }
@@ -183,7 +200,7 @@ impl PageTable {
     ) -> bool {
         let (start, end) = (start.into(), end.into());
         let size = if start == end {
-            PGSIZE
+            Page::SIZE
         } else {
             end.0 - start.0
         };
@@ -202,7 +219,7 @@ impl PageTable {
                 PteLink::PageTable(next) => pt = unsafe { &mut *next },
                 PteLink::Leaf(_) => panic!("Page table {level} is a leaf node"),
                 PteLink::Invalid => {
-                    let Some(next) = Self::try_alloc().map(Box::into_raw) else {
+                    let Ok(next) = Self::try_alloc().map(Box::into_raw) else {
                         return false;
                     };
                     *entry = PageTableEntry::new(next.into(), 0);
@@ -253,62 +270,69 @@ pub struct VirtAddr(pub usize);
 impl VirtAddr {
     pub const MAX: VirtAddr = VirtAddr(1 << (12 + SV39_LEVELS * 9 - 1));
 
-    /// Translate the virtual address `self` to a physical address through page table `pt`. Returns
-    /// `None` if no leaf PTE was found before `SV39_LEVELS` jumps or the leaf PTE permissions are
-    /// missing any bits from `perms`.
-    pub fn to_phys(self, mut pt: &PageTable, perms: Pte) -> Option<PhysAddr> {
+    /// Translate the virtual address `self` to a physical address through page table `pt`. Fails if
+    /// no leaf PTE was found before `SV39_LEVELS` jumps or the leaf PTE permissions are missing any
+    /// bits from `perms`.
+    pub fn to_phys(self, mut pt: &PageTable, perms: Pte) -> Result<PhysAddr, VirtToPhysErr> {
         for level in (0..SV39_LEVELS).rev() {
             let entry = pt.0[self.vpn(level)];
             match entry.next() {
                 PteLink::PageTable(next) => pt = unsafe { &*next },
                 PteLink::Leaf(addr) if entry.perms().contains(perms) => {
-                    return Some(PhysAddr(addr as usize + self.offset(level)));
+                    return Ok(PhysAddr(addr as usize + self.offset(level)));
                 }
-                _ => return None,
+                _ => break,
             }
         }
-        None
+        Err(VirtToPhysErr)
     }
 
     /// Copy all of `buf` into address `self` in page table `pt`. Fails if any pages are not
     /// writable or accessible from user mode. May fail after a partial write.
-    pub fn ucopy_to(mut self, pt: &PageTable, mut buf: &[u8], perms: Option<Pte>) -> bool {
-        let perms = perms.unwrap_or(Pte::U | Pte::W);
-        while !buf.is_empty() {
-            let Some(phys) = self.to_phys(pt, perms) else {
-                return false;
-            };
-
-            let count = (PGSIZE - page_offset(self.0)).min(buf.len());
+    pub fn copy_to(
+        self,
+        pt: &PageTable,
+        mut buf: &[u8],
+        perms: Option<Pte>,
+    ) -> Result<(), VirtToPhysErr> {
+        for phys in self.iter_phys(pt, buf.len(), perms.unwrap_or(Pte::U | Pte::W)) {
+            let phys = phys?;
             unsafe {
-                core::ptr::copy_nonoverlapping(buf.as_ptr(), phys.0 as *mut u8, count);
+                let len = phys.end.sub_ptr(phys.start);
+                core::ptr::copy_nonoverlapping(buf.as_ptr(), phys.start, len);
+                buf = &buf[len..];
             }
-
-            self.0 = page_number(self.0 + PGSIZE);
-            buf = &buf[count..];
         }
 
-        true
+        Ok(())
     }
 
     /// Copy `buf.len()` bytes from address `self` in page table `pt`. Fails if any pages are not
     /// readable or accessible from user mode. May fail after a partial write.
-    pub fn ucopy_from(mut self, pt: &PageTable, mut buf: &mut [MaybeUninit<u8>]) -> bool {
-        while !buf.is_empty() {
-            let Some(phys) = self.to_phys(pt, Pte::U | Pte::R) else {
-                return false;
-            };
-
-            let count = (PGSIZE - page_offset(self.0)).min(buf.len());
+    pub fn copy_from(
+        self,
+        pt: &PageTable,
+        mut buf: &mut [MaybeUninit<u8>],
+    ) -> Result<(), VirtToPhysErr> {
+        for phys in self.iter_phys(pt, buf.len(), Pte::U | Pte::R) {
+            let phys = phys?;
             unsafe {
-                core::ptr::copy_nonoverlapping(phys.0 as *const u8, buf.as_mut_ptr().cast(), count);
+                let len = phys.end.sub_ptr(phys.start);
+                core::ptr::copy_nonoverlapping(phys.start, buf.as_mut_ptr().cast(), len);
+                buf = &mut buf[len..];
             }
-
-            self.0 = page_number(self.0 + PGSIZE);
-            buf = &mut buf[count..];
         }
 
-        true
+        Ok(())
+    }
+
+    pub fn iter_phys(self, pt: &PageTable, size: usize, perms: Pte) -> PhysIter {
+        PhysIter {
+            va: self,
+            size,
+            pt,
+            perms,
+        }
     }
 
     const fn vpn(self, level: usize) -> usize {
@@ -364,6 +388,18 @@ impl<T> From<*mut T> for PhysAddr {
     }
 }
 
+impl<T> From<*const [T]> for PhysAddr {
+    fn from(value: *const [T]) -> Self {
+        Self(value as *const T as usize)
+    }
+}
+
+impl<T> From<*mut [T]> for PhysAddr {
+    fn from(value: *mut [T]) -> Self {
+        Self(value as *mut T as usize)
+    }
+}
+
 impl<T> From<NonNull<T>> for PhysAddr {
     fn from(value: NonNull<T>) -> Self {
         Self(value.as_ptr() as usize)
@@ -371,19 +407,17 @@ impl<T> From<NonNull<T>> for PhysAddr {
 }
 
 #[repr(C, align(0x1000))]
-pub struct Page(pub [u8; PGSIZE]);
+pub struct Page(pub [MaybeUninit<u8>; Page::SIZE]);
 
 impl Page {
-    pub fn zeroed() -> Option<Box<Page>> {
-        Box::try_new_zeroed()
-            .map(|page| unsafe { page.assume_init() })
-            .ok()
+    pub const SIZE: usize = 0x1000;
+
+    pub fn zeroed() -> Result<Box<Page>, AllocError> {
+        Box::try_new_zeroed().map(|page| unsafe { page.assume_init() })
     }
 
-    pub fn uninit() -> Option<Box<Page>> {
-        Box::try_new_uninit()
-            .map(|page| unsafe { page.assume_init() })
-            .ok()
+    pub fn uninit() -> Result<Box<Page>, AllocError> {
+        Box::try_new_uninit().map(|page| unsafe { page.assume_init() })
     }
 
     pub unsafe fn cast<T>(&mut self) -> &mut T {
@@ -394,10 +428,51 @@ impl Page {
 
 #[inline(always)]
 pub const fn page_number(addr: usize) -> usize {
-    addr & !(PGSIZE - 1)
+    addr & !(Page::SIZE - 1)
 }
 
 #[inline(always)]
 pub const fn page_offset(addr: usize) -> usize {
-    addr & (PGSIZE - 1)
+    addr & (Page::SIZE - 1)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtToPhysErr;
+
+impl From<VirtToPhysErr> for SysError {
+    fn from(_: VirtToPhysErr) -> Self {
+        Self::BadAddr
+    }
+}
+
+pub struct PhysIter<'a> {
+    va: VirtAddr,
+    pt: &'a PageTable,
+    size: usize,
+    perms: Pte,
+}
+
+impl Iterator for PhysIter<'_> {
+    type Item = Result<Range<*mut u8>, VirtToPhysErr>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.size == 0 {
+            return None;
+        }
+
+        // TODO: mega/gigapage
+        let phys = match self.va.to_phys(self.pt, self.perms) {
+            Ok(phys) => phys,
+            Err(err) => return Some(Err(err)),
+        };
+        let size = (Page::SIZE - page_offset(self.va.0)).min(self.size);
+
+        self.va.0 = page_number(self.va.0 + Page::SIZE);
+        self.size -= size;
+
+        Some(Ok(Range {
+            start: phys.0 as *mut u8,
+            end: (phys.0 + size) as *mut u8,
+        }))
+    }
 }

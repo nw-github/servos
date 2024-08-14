@@ -8,10 +8,10 @@ use servos::{
     },
 };
 
-use crate::vmm::{VirtAddr, PGSIZE};
+use crate::vmm::{VirtAddr, Page};
 
 pub const MAX_HARTS: usize = 256;
-pub const HART_STACK_LEN: usize = PGSIZE * 4;
+pub const HART_STACK_LEN: usize = Page::SIZE * 4;
 
 #[derive(Clone, Copy)]
 pub struct HartInfo {

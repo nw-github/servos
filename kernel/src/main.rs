@@ -11,10 +11,12 @@
 #![feature(try_with_capacity)]
 #![feature(pointer_is_aligned_to)]
 #![feature(slice_from_ptr_range)]
+#![feature(ptr_sub_ptr)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use alloc::{boxed::Box, vec};
+use alloc::vec;
 use core::{
+    alloc::Allocator,
     arch::asm,
     mem::MaybeUninit,
     ops::Range,
@@ -44,7 +46,7 @@ use servos::{
     Align16,
 };
 use uart::{DebugIo, CONS};
-use vmm::{PageTable, Pte, PGSIZE};
+use vmm::{Page, PageTable, Pte};
 
 mod dump_fdt;
 mod fs;
@@ -237,7 +239,7 @@ unsafe fn init_heap(dt: &DevTree) {
 
     unsafe {
         let kend = addr_of_mut!(_kernel_end);
-        let kend = kend.add(kend.align_offset(PGSIZE)); // align to next page
+        let kend = kend.add(kend.align_offset(Page::SIZE)); // align to next page
         let size = size as usize - (kend as usize - addr as usize);
         let heap = core::slice::from_raw_parts_mut(kend as *mut MaybeUninit<u8>, size);
         println!("Initializing heap:");
@@ -313,7 +315,9 @@ unsafe fn init_vmem() {
 }
 
 unsafe fn init_harts() {
-    let mut next_top = USER_TRAP_FRAME - PGSIZE;
+    use alloc::alloc::{Global, Layout};
+
+    let mut next_top = USER_TRAP_FRAME - Page::SIZE;
 
     let tp = r_tp();
     let pt = unsafe { &mut *addr_of_mut!(KPAGETABLE) };
@@ -327,10 +331,13 @@ unsafe fn init_harts() {
         *state = HartInfo { sp: next_top };
 
         let bottom = next_top - HART_STACK_LEN;
-        let stack = Box::leak(Box::<Align16<[u8; HART_STACK_LEN]>>::new_uninit()) as *mut _;
-        assert!(pt.map_pages((stack as usize).into(), bottom, HART_STACK_LEN, Pte::Rw));
-        // extra PGSIZE for guard page
-        next_top = bottom - PGSIZE;
+        let stack = Global
+            .allocate(unsafe { Layout::from_size_align_unchecked(HART_STACK_LEN, 16) })
+            .expect("allocation failure allocating stack for a hart")
+            .as_ptr();
+        assert!(pt.map_pages(stack.into(), bottom, HART_STACK_LEN, Pte::Rw));
+        // extra Page::SIZE for guard page
+        next_top = bottom - Page::SIZE;
     }
 
     let satp = PageTable::make_satp(pt);
@@ -386,10 +393,10 @@ extern "C" fn kinithart(hartid: usize) -> ! {
     println!("Hello world from hart {hartid}: sp: {}", get_hart_info().sp);
 
     if BOOT_HART.load(core::sync::atomic::Ordering::SeqCst) == hartid {
-        static FILE: &[u8] = include_bytes!("../../initrd.img");
+        static INITRD: &[u8] = include_bytes!("../../initrd.img");
         _ = VFS.lock().mount(
             Path::new("/").try_into().unwrap(),
-            InitRd::new(FILE).unwrap(),
+            InitRd::new(INITRD).unwrap(),
         );
 
         const GROW_SZ: usize = 0x1000;
@@ -421,32 +428,4 @@ extern "C" fn kinithart(hartid: usize) -> ! {
     trap::hart_install();
 
     Scheduler::yield_hart()
-}
-
-#[naked]
-#[repr(align(0x1000))]
-extern "C" fn init_user_mode() -> ! {
-    unsafe {
-        asm!(
-            r"
-            0:
-            li  a0, 100000000
-
-            1:
-            addi a0, a0, -1
-            bne  zero, a0, 1b
-            li   a7, 100
-            ecall
-
-            li   a7, 3          # Sys::GetPid
-            ecall               # a0 holds pid
-
-            li   a7, 2          # Sys::Kill
-            ecall
-
-            j    0b
-            ",
-            options(noreturn)
-        )
-    }
 }

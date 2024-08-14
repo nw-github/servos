@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 use path::Path;
 
-use crate::vmm::{page_offset, PageTable, Pte, VirtAddr, PGSIZE};
+use crate::vmm::{PageTable, Pte, VirtToPhysErr, VirtAddr};
 
 pub mod initrd;
 pub mod path;
@@ -21,6 +21,12 @@ pub enum FsError {
     BadVa,
 }
 
+impl From<VirtToPhysErr> for FsError {
+    fn from(_: VirtToPhysErr) -> Self {
+        Self::BadVa
+    }
+}
+
 pub struct VNode {
     ino: u64,
     directory: bool,
@@ -28,10 +34,10 @@ pub struct VNode {
 }
 
 pub struct DirEntry {
-    name: [u8; 0x100],
-    ino: u64,
-    directory: bool,
-    readonly: bool,
+    pub name: [u8; 0x100],
+    pub ino: u64,
+    pub directory: bool,
+    pub readonly: bool,
 }
 
 pub trait FileSystem {
@@ -48,27 +54,16 @@ pub trait FileSystem {
         mut pos: u64,
         pt: &PageTable,
         buf: VirtAddr,
-        mut len: usize,
+        len: usize,
     ) -> FsResult<usize> {
         let mut total = 0;
-        while len != 0 {
-            let Some(pa) = buf.to_phys(pt, Pte::U | Pte::W) else {
-                return Err(FsError::BadVa);
-            };
-
-            let buf = unsafe {
-                core::slice::from_raw_parts_mut(
-                    pa.0 as *mut u8,
-                    (PGSIZE - page_offset(pa.0)).min(len),
-                )
-            };
-            let read = self.read(vn, pos, buf)?;
+        for phys in buf.iter_phys(pt, len, Pte::U | Pte::W) {
+            let phys = phys.map(|r| unsafe { core::slice::from_mut_ptr_range(r) })?;
+            let read = self.read(vn, pos, phys)?;
             total += read;
-            if read < buf.len() {
+            if read < phys.len() {
                 break;
             }
-
-            len -= read;
             pos += read as u64;
         }
 
