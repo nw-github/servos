@@ -1,0 +1,99 @@
+use alloc::{sync::Arc, vec::Vec};
+use shared::io::OpenFlags;
+
+use crate::dev::Device;
+
+use super::{
+    path::{OwnedPath, Path},
+    vfs::MountError,
+    DirEntry, FileSystem, FsError, FsResult, VNode,
+};
+
+pub struct DeviceFs {
+    devices: Vec<(OwnedPath, Arc<dyn Device>)>,
+}
+
+impl DeviceFs {
+    pub const fn new() -> Self {
+        Self {
+            devices: Vec::new(),
+        }
+    }
+
+    pub fn add_device(&mut self, name: OwnedPath, dev: Arc<dyn Device>) -> Result<(), MountError> {
+        assert!(name.components().count() == 1);
+        if self.find_device(&name).is_some() {
+            return Err(MountError::AlreadyMounted);
+        }
+
+        if self.devices.try_reserve(1).is_err() {
+            return Err(MountError::NoMem);
+        }
+
+        self.devices.push((name, dev));
+        Ok(())
+    }
+
+    fn find_device(&self, name: &Path) -> Option<usize> {
+        self.devices.iter().position(|(dev, _)| dev == name)
+    }
+}
+
+impl FileSystem for DeviceFs {
+    fn open(&self, path: &Path, flags: OpenFlags) -> FsResult<VNode> {
+        let mut components = path.components();
+        if components.next().is_none() {
+            return Ok(VNode {
+                ino: 0,
+                directory: true,
+                readonly: true,
+            });
+        } else if components.next().is_some() {
+            return Err(FsError::PathNotFound);
+        }
+
+        let Some(ino) = self.find_device(path) else {
+            return Err(FsError::PathNotFound);
+        };
+        // if devices become removable this will have to change
+        Ok(VNode {
+            ino: ino as u64,
+            directory: false,
+            readonly: !flags.contains(OpenFlags::ReadWrite),
+        })
+    }
+
+    fn read(&self, vn: &VNode, pos: u64, buf: &mut [u8]) -> FsResult<usize> {
+        self.devices[vn.ino as usize].1.read(pos, buf)
+    }
+
+    fn write(&self, vn: &VNode, pos: u64, buf: &[u8]) -> FsResult<usize> {
+        self.devices[vn.ino as usize].1.write(pos, buf)
+    }
+
+    fn close(&self, _vn: &VNode) -> FsResult<()> {
+        Ok(())
+    }
+
+    fn get_dir_entry(&self, vn: &VNode, pos: usize) -> FsResult<Option<DirEntry>> {
+        if !vn.directory {
+            return Err(FsError::InvalidOp);
+        }
+
+        if let Some((name, _)) = self.devices.get(pos) {
+            let name: &[u8] = name.as_ref().as_ref();
+            let mut dir = DirEntry {
+                name: [0; 256],
+                name_len: name.len(),
+                directory: false,
+            };
+            dir.name[..name.len()].copy_from_slice(name);
+            Ok(Some(dir))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+unsafe impl Sync for DeviceFs {}
+unsafe impl Send for DeviceFs {}

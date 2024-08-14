@@ -1,6 +1,7 @@
 use core::mem::size_of;
 
 use alloc::{boxed::Box, vec::Vec};
+use shared::io::OpenFlags;
 
 use super::{path::Path, DirEntry, FileSystem, FsError, FsResult, VNode};
 
@@ -85,7 +86,7 @@ impl InitRd {
 }
 
 impl FileSystem for InitRd {
-    fn open(&self, path: &Path, _flags: super::OpenFlags) -> FsResult<VNode> {
+    fn open(&self, path: &Path, _flags: OpenFlags) -> FsResult<VNode> {
         if path.is_empty() {
             return Err(FsError::PathNotFound);
         }
@@ -146,15 +147,14 @@ impl FileSystem for InitRd {
             return Err(FsError::InvalidOp);
         }
 
-        let Some((ino, inode)) = self.dir_entry(dir, pos) else {
+        let Some((_, inode)) = self.dir_entry(dir, pos) else {
             return Ok(None);
         };
 
         let mut entry = DirEntry {
             name: [0; 0x100],
-            ino: ino as u64,
+            name_len: inode.nlen as usize,
             directory: inode.typ == dir.typ,
-            readonly: true,
         };
         entry.name[..inode.name.len()].copy_from_slice(&inode.name);
 

@@ -14,6 +14,13 @@ impl DebugIo {
             DebugIo::Ns16550a(c) => c.read(),
         }
     }
+
+    pub fn put(&mut self, byte: u8) {
+        match self {
+            DebugIo::Sbi(c) => c.put(byte),
+            DebugIo::Ns16550a(c) => c.put(byte),
+        }
+    }
 }
 
 impl Write for DebugIo {

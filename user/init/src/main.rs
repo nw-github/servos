@@ -1,62 +1,17 @@
 #![no_std]
 #![no_main]
 
-use core::convert::Infallible;
+use shared::io::OpenFlags;
 
-use shared::sys::{Sys, SysError};
+pub mod print;
+pub mod sys;
 
 #[panic_handler]
-fn on_panic(_: &core::panic::PanicInfo) -> ! {
-    _ = kill(getpid());
+fn on_panic(info: &core::panic::PanicInfo) -> ! {
+    println!("panic from init: {info}");
+
+    _ = sys::kill(sys::getpid());
     loop {}
-}
-
-pub fn syscall(no: Sys, a0: usize, a1: usize, a2: usize, a3: usize) -> Result<usize, SysError> {
-    let (result, err): (usize, usize);
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") no as usize,
-            in("a0") a0,
-            in("a1") a1,
-            in("a2") a2,
-            in("a3") a3,
-            lateout("a0") result,
-            lateout("a1") err,
-        );
-    }
-    if err != 0 {
-        Err(SysError::from_repr(err).unwrap())
-    } else {
-        Ok(result)
-    }
-}
-
-pub fn shutdown(restart: bool) -> Result<Infallible, SysError> {
-    Err(syscall(Sys::Shutdown, restart as usize, 0, 0, 0).unwrap_err())
-}
-
-pub fn close(fd: usize) -> Result<(), SysError> {
-    syscall(Sys::Close, fd, 0, 0, 0).map(|_| ())
-}
-
-pub fn kill(pid: usize) -> Result<(), SysError> {
-    syscall(Sys::Kill, pid, 0, 0, 0).map(|_| ())
-}
-
-pub fn getpid() -> usize {
-    syscall(Sys::GetPid, 0, 0, 0, 0).unwrap() as usize
-}
-
-// uint open(const char *path, uint pathlen, u32 flags);
-pub fn open(path: impl AsRef<[u8]>, flags: u32) -> Result<usize, SysError> {
-    let path = path.as_ref();
-    syscall(Sys::Open, path.as_ptr() as usize, path.len(), flags as usize, 0)
-}
-
-// uint read(uint fd, u64 pos, char *buf, uint buflen);
-pub fn read(fd: usize, pos: u64, buf: &mut [u8]) -> Result<usize, SysError> {
-    syscall(Sys::Read, fd, pos as usize, buf.as_mut_ptr() as usize, buf.len())
 }
 
 static mut GLOBAL_STATIC: usize = 5;
@@ -66,24 +21,51 @@ static ZEROED: [u8; 0x2000] = [0; 0x2000];
 
 #[no_mangle]
 pub extern "C" fn _start() {
+    // open stdout and stdin
+    _ = sys::open("/dev/uart0", OpenFlags::ReadWrite).unwrap();
+    _ = sys::open("/dev/uart0", OpenFlags::empty()).unwrap();
+    println!("\n\nHello world from the init process!");
+
     unsafe {
+        assert_eq!(GLOBAL_STATIC, 5);
         while GLOBAL_STATIC != 0 {
             GLOBAL_STATIC -= 1;
         }
+        assert_eq!(GLOBAL_STATIC, 0);
     }
 
-    let mut buf = ZEROED;
-    // should print attempted to kill pid 0
-    _ = kill(buf.iter().map(|&p| p as usize).sum());
+    {
+        let fd = sys::open("/1001_A.txt", OpenFlags::empty()).unwrap();
+        print!("page boundary read cross test (fd {fd}): ");
 
-    let fd = open("/test.txt", 0).unwrap();
-    let read = read(fd, 0, &mut buf).unwrap();
+        let mut buf = ZEROED;
+        assert_eq!(buf.iter().map(|&p| p as usize).sum::<usize>(), 0);
 
-    // should print attempted to kill pid 4097
-    _ = kill(read);
+        let read = sys::read(fd, 0, &mut buf).unwrap();
+        assert_eq!(read, 0x1001);
+        assert_eq!(buf.iter().map(|&p| p as usize).sum::<usize>(), b'A' as usize * 0x1001);
 
-    // should print attempted to kill pid 266305
-    _ = kill(buf[..read].iter().map(|&p| p as usize).sum());
+        _ = sys::close(fd);
+        assert_eq!(sys::read(fd, 0, &mut buf), Err(shared::sys::SysError::BadFd));
 
-    _ = shutdown(false).unwrap();
+        println!("GOOD");
+    }
+
+    {
+        let fd = sys::open("/test.txt", OpenFlags::empty()).unwrap();
+        println!("file cursor test (fd {fd}): ");
+
+        let mut buf = [0; 8];
+        loop {
+            match sys::read(fd, u64::MAX, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => println!("Read {n} bytes: {:?}", core::str::from_utf8(&buf[..n])),
+                Err(err) => panic!("Cursor file read error: {err:?}"),
+            }
+        }
+
+        _ = sys::close(fd);
+    }
+
+    _ = sys::shutdown(false).unwrap();
 }

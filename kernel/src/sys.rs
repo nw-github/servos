@@ -1,10 +1,12 @@
 use alloc::vec::Vec;
-use shared::sys::{Sys, SysError};
+use shared::{
+    io::OpenFlags,
+    sys::{Sys, SysError},
+};
 
 use crate::{
-    fs::{vfs::Vfs, FsError, OpenFlags},
+    fs::{vfs::Vfs, FsError},
     hart::POWER,
-    println,
     proc::{ProcessNode, Reg, PROC_LIST},
     vmm::VirtAddr,
 };
@@ -103,7 +105,7 @@ fn sys_close(proc: ProcessNode, fd: usize) -> SysResult {
 }
 
 // uint read(uint fd, u64 pos, char *buf, uint buflen);
-fn sys_read(proc: ProcessNode, pos: usize, fd: usize, buf: VirtAddr, buflen: usize) -> SysResult {
+fn sys_read(proc: ProcessNode, fd: usize, pos: usize, buf: VirtAddr, buflen: usize) -> SysResult {
     unsafe {
         proc.with(|proc| {
             let Some(fd) = proc.files.get(fd).and_then(|f| f.as_ref()) else {
@@ -111,6 +113,19 @@ fn sys_read(proc: ProcessNode, pos: usize, fd: usize, buf: VirtAddr, buflen: usi
             };
 
             Ok(fd.read_va(pos as u64, &proc.pagetable, buf, buflen)?)
+        })
+    }
+}
+
+// uint write(uint fd, u64 pos, const char *buf, uint buflen);
+fn sys_write(proc: ProcessNode, fd: usize, pos: usize, buf: VirtAddr, buflen: usize) -> SysResult {
+    unsafe {
+        proc.with(|proc| {
+            let Some(fd) = proc.files.get(fd).and_then(|f| f.as_ref()) else {
+                return Err(SysError::BadFd);
+            };
+
+            Ok(fd.write_va(pos as u64, &proc.pagetable, buf, buflen)?)
         })
     }
 }
@@ -135,12 +150,9 @@ pub fn handle_syscall(proc: ProcessNode) {
         Some(Sys::Open) => sys_open(proc, VirtAddr(a0), a1, (a2 & u32::MAX as usize) as u32),
         Some(Sys::Close) => sys_close(proc, a0),
         Some(Sys::Read) => sys_read(proc, a0, a1, VirtAddr(a2), a3),
+        Some(Sys::Write) => sys_write(proc, a0, a1, VirtAddr(a2), a3),
         None => Err(SysError::InvalidSyscall),
     };
-
-    if syscall_no == 2 {
-        println!("attempting to kill pid {a0}: {}", result.is_ok());
-    }
 
     let (a0, a1) = match result {
         Ok(res) => (res, 0),

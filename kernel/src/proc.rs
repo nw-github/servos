@@ -5,7 +5,7 @@ use core::{
 };
 
 use crate::{
-    fs::vfs::FileRef,
+    fs::vfs::FileDescriptor,
     hart::get_hart_info,
     trap::{self, USER_TRAP_VEC},
     vmm::{Page, PageTable, Pte, VirtAddr},
@@ -121,7 +121,7 @@ pub struct Process {
     pub trapframe: *mut TrapFrame,
     pub status: ProcStatus,
     pub killed: bool,
-    pub files: HoleArray<FileRef, 32>,
+    pub files: HoleArray<FileDescriptor, 32>,
 }
 
 pub const USER_TRAP_FRAME: VirtAddr = VirtAddr(USER_TRAP_VEC.0 - Page::SIZE);

@@ -12,9 +12,12 @@
 #![feature(pointer_is_aligned_to)]
 #![feature(slice_from_ptr_range)]
 #![feature(ptr_sub_ptr)]
+#![feature(cell_update)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use alloc::vec;
+use alloc::{sync::Arc, vec};
+use dev::{console::Console, null::NullDevice};
+use shared::io::OpenFlags;
 use core::{
     alloc::Allocator,
     arch::asm,
@@ -28,10 +31,10 @@ use fdt_rs::{
     prelude::{FallibleIterator, PropReader},
 };
 use fs::{
+    dev::DeviceFs,
     initrd::InitRd,
     path::Path,
     vfs::{Vfs, VFS},
-    OpenFlags,
 };
 use hart::{get_hart_info, HartInfo, PowerManagement, HART_INFO, HART_STACK_LEN, MAX_HARTS, POWER};
 use plic::PLIC;
@@ -48,6 +51,7 @@ use servos::{
 use uart::{DebugIo, CONS};
 use vmm::{Page, PageTable, Pte};
 
+mod dev;
 mod dump_fdt;
 mod fs;
 mod hart;
@@ -393,17 +397,31 @@ extern "C" fn kinithart(hartid: usize) -> ! {
     println!("Hello world from hart {hartid}: sp: {}", get_hart_info().sp);
 
     if BOOT_HART.load(core::sync::atomic::Ordering::SeqCst) == hartid {
+        let mut devices = DeviceFs::new();
+        devices
+            .add_device(Path::new("uart0").try_into().unwrap(), Arc::new(Console))
+            .unwrap();
+        devices
+            .add_device(Path::new("null").try_into().unwrap(), Arc::new(NullDevice))
+            .unwrap();
+
         static INITRD: &[u8] = include_bytes!("../../initrd.img");
-        _ = VFS.lock().mount(
-            Path::new("/").try_into().unwrap(),
-            InitRd::new(INITRD).unwrap(),
-        );
+        {
+            let mut vfs = VFS.lock();
+            vfs.mount(
+                Path::new("/").try_into().unwrap(),
+                Arc::new(InitRd::new(INITRD).unwrap()),
+            )
+            .unwrap();
+            vfs.mount(Path::new("/dev").try_into().unwrap(), Arc::new(devices))
+                .unwrap();
+        }
 
         const GROW_SZ: usize = 0x1000;
         let file = Vfs::open("/bin/init", OpenFlags::empty()).unwrap();
         let mut buf = vec![0; GROW_SZ];
         let mut pos = 0usize;
-        while let Ok(read) = file.read(pos as u64, &mut buf[pos..]) {
+        while let Ok(read) = file.read(u64::MAX, &mut buf[pos..]) {
             if read == 0 {
                 break;
             } else if read < GROW_SZ {

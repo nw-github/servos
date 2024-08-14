@@ -47,7 +47,7 @@ impl PartialEq for Path {
             return false;
         }
 
-        iter_after(self.components(), rhs.components()).is_none()
+        self.components().eq(rhs.components())
     }
 }
 
