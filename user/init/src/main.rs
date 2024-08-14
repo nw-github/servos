@@ -88,8 +88,9 @@ extern "C" fn _start(argc: usize, argv: *const *const u8) {
     )
     .unwrap();
     let pid1 = sys::spawn("/bin/ls", &[String::from("/bin/ls")]).unwrap();
+    let pid2 = sys::spawn("/bin/ls", &[String::from("/doesnt-exist")]).unwrap();
 
-    println!("Spawned PID {pid0} and {pid1}!");
+    println!("Spawned PID {pid0}, {pid1}, {pid2}!");
     loop {}
 
     // _ = sys::shutdown(false).unwrap();
