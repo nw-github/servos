@@ -433,7 +433,8 @@ extern "C" fn kinithart(hartid: usize) -> ! {
         }
 
         let file = ElfFile::new(&buf).expect("/bin/init isn't a compatible ELF file");
-        Process::spawn(&file).expect("couldn't spawn init process");
+        let root = Vfs::open("/", OpenFlags::empty()).unwrap();
+        Process::spawn(&file, root).expect("couldn't spawn init process");
     }
 
     // ask for PLIC interrupts

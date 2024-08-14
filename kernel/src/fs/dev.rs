@@ -40,7 +40,11 @@ impl DeviceFs {
 }
 
 impl FileSystem for DeviceFs {
-    fn open(&self, path: &Path, flags: OpenFlags) -> FsResult<VNode> {
+    fn open(&self, path: &Path, flags: OpenFlags, root: Option<&VNode>) -> FsResult<VNode> {
+        if !path.is_absolute() && root.is_some_and(|r| !r.directory) {
+            return Err(FsError::PathNotFound);
+        }
+
         let mut components = path.components();
         if components.next().is_none() {
             return Ok(VNode {

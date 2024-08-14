@@ -16,14 +16,14 @@ use super::{
     DirEntry, FileSystem, FsResult, OpenFlags, VNode,
 };
 
-pub struct FileDescriptor {
+pub struct Fd {
     node: VNode,
     dev: Arc<dyn FileSystem>,
     // right now file descriptors can't be shared but if/when they can this might need a spinlock
     pos: Cell<u64>,
 }
 
-impl FileDescriptor {
+impl Fd {
     pub unsafe fn new(node: VNode, dev: Arc<dyn FileSystem>) -> Self {
         Self {
             node,
@@ -74,6 +74,10 @@ impl FileDescriptor {
         }
     }
 
+    pub fn vnode(&self) -> &VNode {
+        &self.node
+    }
+
     fn exec_with_pos(&self, pos: u64, f: impl FnOnce(u64) -> FsResult<usize>) -> FsResult<usize> {
         if pos == u64::MAX {
             let prev = self.pos.get();
@@ -86,7 +90,7 @@ impl FileDescriptor {
     }
 }
 
-impl Drop for FileDescriptor {
+impl Drop for Fd {
     fn drop(&mut self) {
         _ = self.dev.close(&self.node);
     }
@@ -124,8 +128,8 @@ impl Vfs {
         self.mounts.remove(path).is_some()
     }
 
-    pub fn open(path: impl AsRef<Path>, flags: OpenFlags) -> FsResult<FileDescriptor> {
-        fn open(path: &Path, flags: OpenFlags) -> FsResult<FileDescriptor> {
+    pub fn open(path: impl AsRef<Path>, flags: OpenFlags) -> FsResult<Fd> {
+        fn open(path: &Path, flags: OpenFlags) -> FsResult<Fd> {
             let Some((dev, path)) = VFS.lock().mounts.iter().rev().find_map(|(mount, dev)| {
                 let rest = path.strip_prefix(mount)?;
                 Some((dev.clone(), rest))
@@ -133,10 +137,20 @@ impl Vfs {
                 return Err(FsError::PathNotFound);
             };
 
-            Ok(unsafe { FileDescriptor::new(dev.open(path, flags)?, dev) })
+            Ok(unsafe { Fd::new(dev.open(path, flags, None)?, dev) })
         }
 
         open(path.as_ref(), flags)
+    }
+
+    pub fn open_in_cwd(cwd: &Fd, path: impl AsRef<Path>, flags: OpenFlags) -> FsResult<Fd> {
+        assert!(cwd.node.directory);
+        let path = path.as_ref();
+        if path.is_absolute() {
+            Self::open(path, flags)
+        } else {
+            Ok(unsafe { Fd::new(cwd.dev.open(path, flags, Some(&cwd.node))?, cwd.dev.clone()) })
+        }
     }
 }
 

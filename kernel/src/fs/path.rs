@@ -37,6 +37,10 @@ impl Path {
         })
     }
 
+    pub fn is_absolute(&self) -> bool {
+        matches!(self.0.first(), Some(b'/'))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.components().next().is_none()
     }

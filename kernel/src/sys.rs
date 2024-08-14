@@ -71,23 +71,23 @@ fn sys_getpid(proc: ProcessNode) -> SysResult {
 
 // uint open(const char *path, uint pathlen, u32 flags);
 fn sys_open(proc: ProcessNode, path: VirtAddr, len: usize, flags: u32) -> SysResult {
+    // TODO: don't hold the proc lock while doing fs operations
+
     let Ok(mut buf) = Vec::try_with_capacity(len) else {
         return Err(SysError::NoMem);
     };
     unsafe {
-        proc.with(|proc| path.copy_from(&proc.pagetable, buf.spare_capacity_mut()))?;
-        buf.set_len(len);
-    }
+        proc.with(|mut proc| {
+            path.copy_from(&proc.pagetable, buf.spare_capacity_mut())?;
+            buf.set_len(len);
 
-    match Vfs::open(&buf[..], OpenFlags::from_bits_truncate(flags)) {
-        Ok(file) => {
-            let Ok(fd) = (unsafe { proc.with(|mut proc| proc.files.push(file).map(|v| v.0)) })
-            else {
-                return Err(SysError::NoMem);
-            };
-            Ok(fd)
-        }
-        Err(err) => Err(err.into()),
+            let file = Vfs::open_in_cwd(&proc.cwd, &buf[..], OpenFlags::from_bits_truncate(flags))?;
+            proc
+            .files
+            .push(file)
+            .map(|v| v.0)
+            .map_err(|_| SysError::NoMem)
+        })
     }
 }
 
@@ -148,6 +148,27 @@ fn sys_readdir(proc: ProcessNode, fd: usize, pos: usize, entry: VirtAddr) -> Sys
     }
 }
 
+// void chdir(const char *path, uint len);
+fn sys_chdir(proc: ProcessNode, path: VirtAddr, len: usize) -> SysResult {
+    let Ok(mut buf) = Vec::try_with_capacity(len) else {
+        return Err(SysError::NoMem);
+    };
+    unsafe {
+        proc.with(|mut proc| {
+            path.copy_from(&proc.pagetable, buf.spare_capacity_mut())?;
+            buf.set_len(len);
+
+            let cwd = Vfs::open_in_cwd(&proc.cwd, &buf[..], OpenFlags::empty())?;
+            if !cwd.vnode().directory {
+                return Err(SysError::InvalidArgument);
+            }
+
+            proc.cwd = cwd;
+            Ok(0)
+        })
+    }
+}
+
 pub fn handle_syscall(proc: ProcessNode) {
     let (syscall_no, a0, a1, a2, a3) = unsafe {
         proc.with(|proc| {
@@ -170,6 +191,7 @@ pub fn handle_syscall(proc: ProcessNode) {
         Some(Sys::Read) => sys_read(proc, a0, a1, VirtAddr(a2), a3),
         Some(Sys::Write) => sys_write(proc, a0, a1, VirtAddr(a2), a3),
         Some(Sys::Readdir) => sys_readdir(proc, a0, a1, VirtAddr(a2)),
+        Some(Sys::Chdir) => sys_chdir(proc, VirtAddr(a0), a1),
         None => Err(SysError::InvalidSyscall),
     };
 

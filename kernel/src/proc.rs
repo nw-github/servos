@@ -5,7 +5,7 @@ use core::{
 };
 
 use crate::{
-    fs::vfs::FileDescriptor,
+    fs::vfs::Fd,
     hart::get_hart_info,
     trap::{self, USER_TRAP_VEC},
     vmm::{Page, PageTable, Pte, VirtAddr},
@@ -121,13 +121,14 @@ pub struct Process {
     pub trapframe: *mut TrapFrame,
     pub status: ProcStatus,
     pub killed: bool,
-    pub files: HoleArray<FileDescriptor, 32>,
+    pub files: HoleArray<Fd, 32>,
+    pub cwd: Fd,
 }
 
 pub const USER_TRAP_FRAME: VirtAddr = VirtAddr(USER_TRAP_VEC.0 - Page::SIZE);
 
 impl Process {
-    pub fn spawn(file: &ElfFile) -> Result<(), SysError> {
+    pub fn spawn(file: &ElfFile, cwd: Fd) -> Result<(), SysError> {
         let mut pt = PageTable::try_alloc()?;
         let mut trapframe_page = Page::zeroed()?;
         let trapframe = &mut *trapframe_page as *mut _ as *mut TrapFrame;
@@ -190,6 +191,7 @@ impl Process {
                     status: ProcStatus::Idle,
                     killed: false,
                     files: HoleArray::empty(),
+                    cwd,
                 }),
             )?)));
 

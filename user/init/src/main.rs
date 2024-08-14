@@ -60,7 +60,7 @@ pub extern "C" fn _start() {
     }
 
     {
-        let fd = sys::open("/1001_A.txt", OpenFlags::empty()).unwrap();
+        let fd = sys::open("1001_A.txt", OpenFlags::empty()).unwrap();
         print!("page boundary read cross test (fd {fd:?}): ");
 
         let mut buf = ZEROED;
@@ -83,7 +83,7 @@ pub extern "C" fn _start() {
     }
 
     {
-        let fd = sys::open("/test.txt", OpenFlags::empty()).unwrap();
+        let fd = sys::open("test.txt", OpenFlags::empty()).unwrap();
         println!("file cursor test (fd {fd:?}): ");
 
         let mut buf = [0; 8];
@@ -98,8 +98,12 @@ pub extern "C" fn _start() {
         _ = sys::close(fd);
     }
 
-    printdir("/", 1);
+    printdir(".", 1);
     printdir("/dev", 2);
+    printdir("bin", 2);
+
+    sys::chdir("/bin").unwrap();
+    printdir(".", 1);
 
     _ = sys::shutdown(false).unwrap();
 }

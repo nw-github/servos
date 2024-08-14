@@ -86,8 +86,8 @@ impl InitRd {
 }
 
 impl FileSystem for InitRd {
-    fn open(&self, path: &Path, _flags: OpenFlags) -> FsResult<VNode> {
-        let mut ino = 0;
+    fn open(&self, path: &Path, _flags: OpenFlags, root: Option<&VNode>) -> FsResult<VNode> {
+        let mut ino = root.filter(|_| !path.is_absolute()).map(|r| r.ino as usize).unwrap_or(0);
         'outer: for component in path.components() {
             if self.inodes[ino].typ != INODE_DIR {
                 return Err(FsError::PathNotFound);

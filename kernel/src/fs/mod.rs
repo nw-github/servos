@@ -29,14 +29,13 @@ impl From<VirtToPhysErr> for FsError {
 }
 
 pub struct VNode {
-    ino: u64,
-    directory: bool,
-    readonly: bool,
+    pub ino: u64,
+    pub directory: bool,
+    pub readonly: bool,
 }
 
 pub trait FileSystem {
-    /// Open a path. `path` should be the components after the mount point
-    fn open(&self, path: &Path, flags: OpenFlags) -> FsResult<VNode>;
+    fn open(&self, path: &Path, flags: OpenFlags, cwd: Option<&VNode>) -> FsResult<VNode>;
     fn read(&self, vn: &VNode, pos: u64, buf: &mut [u8]) -> FsResult<usize>;
     fn write(&self, vn: &VNode, pos: u64, buf: &[u8]) -> FsResult<usize>;
     fn close(&self, vn: &VNode) -> FsResult<()>;

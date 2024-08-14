@@ -86,3 +86,8 @@ pub fn readdir(fd: RawFd, pos: usize) -> Result<Option<DirEntry>, SysError> {
         Ok(Some(unsafe { entry.assume_init() }))
     }
 }
+
+pub fn chdir(path: impl AsRef<[u8]>) -> Result<(), SysError> {
+    let path = path.as_ref();
+    syscall(Sys::Chdir, path.as_ptr() as usize, path.len(), 0, 0).map(|_| ())
+}
