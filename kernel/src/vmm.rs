@@ -326,6 +326,13 @@ impl VirtAddr {
         Ok(())
     }
 
+    pub fn copy_type_from<T: Copy>(self, pt: &PageTable) -> Result<T, VirtToPhysErr> {
+        // check align?
+        let mut buf = MaybeUninit::<T>::uninit();
+        self.copy_from(pt, buf.as_bytes_mut())?;
+        Ok(unsafe { buf.assume_init() })
+    }
+
     pub fn copy_type_to<T: Copy>(
         self,
         pt: &PageTable,

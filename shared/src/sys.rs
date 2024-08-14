@@ -12,6 +12,8 @@ pub enum Sys {
     Write,
     Readdir,
     Chdir,
+    Spawn,
+    Stat,
 }
 
 #[derive(strum::FromRepr, Debug, Clone, Copy, PartialEq, Eq)]

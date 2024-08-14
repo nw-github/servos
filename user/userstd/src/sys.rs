@@ -1,9 +1,8 @@
 use core::{convert::Infallible, mem::MaybeUninit};
 
-use shared::{
-    io::{DirEntry, OpenFlags},
-    sys::{Sys, SysError},
-};
+pub use shared::sys::*;
+
+use shared::io::{DirEntry, OpenFlags, Stat};
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,12 +37,12 @@ pub fn close(fd: RawFd) -> Result<(), SysError> {
     syscall(Sys::Close, fd.0, 0, 0, 0).map(|_| ())
 }
 
-pub fn kill(pid: usize) -> Result<(), SysError> {
-    syscall(Sys::Kill, pid, 0, 0, 0).map(|_| ())
+pub fn kill(pid: u32) -> Result<(), SysError> {
+    syscall(Sys::Kill, pid as usize, 0, 0, 0).map(|_| ())
 }
 
-pub fn getpid() -> usize {
-    syscall(Sys::GetPid, 0, 0, 0, 0).unwrap() as usize
+pub fn getpid() -> u32 {
+    syscall(Sys::GetPid, 0, 0, 0, 0).unwrap() as u32
 }
 
 pub fn open(path: impl AsRef<[u8]>, flags: OpenFlags) -> Result<RawFd, SysError> {
@@ -87,7 +86,40 @@ pub fn readdir(fd: RawFd, pos: usize) -> Result<Option<DirEntry>, SysError> {
     }
 }
 
+pub fn stat(fd: RawFd) -> Result<Stat, SysError> {
+    let mut entry = MaybeUninit::<Stat>::uninit();
+    syscall(Sys::Stat, fd.0, entry.as_mut_ptr() as usize, 0, 0)?;
+    Ok(unsafe { entry.assume_init() })
+}
+
 pub fn chdir(path: impl AsRef<[u8]>) -> Result<(), SysError> {
     let path = path.as_ref();
     syscall(Sys::Chdir, path.as_ptr() as usize, path.len(), 0, 0).map(|_| ())
+}
+
+#[repr(C)]
+pub struct String {
+    buf: *const u8,
+    len: usize,
+}
+
+impl From<&'static str> for String {
+    fn from(value: &'static str) -> Self {
+        Self {
+            buf: value.as_ptr(),
+            len: value.len()
+        }
+    }
+}
+
+pub fn spawn(path: impl AsRef<[u8]>, args: &[String]) -> Result<u32, SysError> {
+    let path = path.as_ref();
+    syscall(
+        Sys::Spawn,
+        path.as_ptr() as usize,
+        path.len(),
+        args.as_ptr() as usize,
+        args.len(),
+    )
+    .map(|pid| pid as u32)
 }

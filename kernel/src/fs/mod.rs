@@ -30,6 +30,7 @@ impl From<VirtToPhysErr> for FsError {
     }
 }
 
+#[derive(Clone)]
 pub struct VNode {
     pub ino: u64,
     pub directory: bool,

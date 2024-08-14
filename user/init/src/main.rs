@@ -3,81 +3,16 @@
 
 use core::ffi::CStr;
 
-use shared::io::OpenFlags;
-
-pub mod print;
-pub mod sys;
-
-#[panic_handler]
-fn on_panic(info: &core::panic::PanicInfo) -> ! {
-    println!("panic from init: {info}");
-
-    _ = sys::kill(sys::getpid());
-    loop {}
-}
+use userstd::{
+    io::OpenFlags,
+    print, println,
+    sys::{self, String},
+};
 
 static mut GLOBAL_STATIC: usize = 5;
 
 #[link_section = ".bss"]
 static ZEROED: [u8; 0x2000] = [0; 0x2000];
-
-struct Size(usize);
-
-impl core::fmt::Display for Size {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        const KB: usize = 1024;
-        const MB: usize = KB * 1024;
-        const GB: usize = MB * 1024;
-
-        let [kb, mb, gb] = [self.0 / KB, self.0 / MB, self.0 / GB];
-        if kb == 0 {
-            write!(f, "{:>4}", self.0)?;
-        } else if mb == 0 {
-            if kb > 9 {
-                write!(f, "{kb:>4}k")?;
-            } else {
-                write!(f, "{kb:>1}.{}k", (self.0 % KB) / 100)?;
-            }
-        } else if gb == 0 {
-            if mb > 9 {
-                write!(f, "{mb:>4}M")?;
-            } else {
-                write!(f, "{mb:>1}.{}M", (self.0 % MB) / 100000)?;
-            }
-        } else if gb > 9 {
-            write!(f, "{gb:>4}G")?;
-        } else {
-            write!(f, "{gb:>1}.{}G", (self.0 % GB) / 100000000)?;
-        }
-
-        Ok(())
-    }
-}
-
-fn printdir(dir: impl AsRef<[u8]>, mut tabs: usize) {
-    let dir = dir.as_ref();
-    let Ok(fd) = sys::open(dir, OpenFlags::empty()) else {
-        return;
-    };
-
-    (0..tabs).for_each(|_| print!("  "));
-    tabs += 1;
-
-    println!("{}", core::str::from_utf8(dir).unwrap());
-    while let Ok(Some(ent)) = sys::readdir(fd, usize::MAX) {
-        (0..tabs).for_each(|_| print!("  "));
-        let name = core::str::from_utf8(&ent.name[..ent.name_len]).unwrap();
-        if ent.stat.directory {
-            println!("dr-- {:>4}  {name}", "-");
-        } else {
-            println!(
-                ".r{}x {}  {name}",
-                if ent.stat.readonly { "-" } else { "w" },
-                Size(ent.stat.size)
-            );
-        }
-    }
-}
 
 #[no_mangle]
 extern "C" fn _start(argc: usize, argv: *const *const u8) {
@@ -120,7 +55,7 @@ extern "C" fn _start(argc: usize, argv: *const *const u8) {
         _ = sys::close(fd);
         assert_eq!(
             sys::read(fd, 0, &mut buf),
-            Err(shared::sys::SysError::BadFd)
+            Err(userstd::sys::SysError::BadFd)
         );
 
         println!("GOOD");
@@ -142,12 +77,20 @@ extern "C" fn _start(argc: usize, argv: *const *const u8) {
         _ = sys::close(fd);
     }
 
-    printdir("/", 0);
-    printdir("/dev", 1);
-    printdir("bin", 1);
+    let pid0 = sys::spawn(
+        "/bin/ls",
+        &[
+            String::from("/"),
+            String::from("/dev"),
+            String::from("bin"),
+            String::from("."),
+        ],
+    )
+    .unwrap();
+    let pid1 = sys::spawn("/bin/ls", &[String::from("/bin/ls")]).unwrap();
 
-    sys::chdir("/bin").unwrap();
-    printdir(".", 0);
+    println!("Spawned PID {pid0} and {pid1}!");
+    loop {}
 
-    _ = sys::shutdown(false).unwrap();
+    // _ = sys::shutdown(false).unwrap();
 }

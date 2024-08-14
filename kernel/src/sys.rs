@@ -5,9 +5,9 @@ use shared::{
 };
 
 use crate::{
-    fs::{vfs::Vfs, FsError},
+    fs::{path::Path, vfs::Vfs, FsError},
     hart::POWER,
-    proc::{ProcessNode, Reg, PROC_LIST},
+    proc::{Process, ProcessNode, Reg, PROC_LIST},
     vmm::VirtAddr,
 };
 
@@ -38,7 +38,7 @@ fn sys_shutdown(_proc: ProcessNode, typ: usize) -> SysResult {
     }
 }
 
-// void kill(uint pid);
+// void kill(u32 pid);
 fn sys_kill(_proc: ProcessNode, pid: usize) -> SysResult {
     if pid == 0 {
         return Err(SysError::InvalidArgument);
@@ -64,7 +64,7 @@ fn sys_kill(_proc: ProcessNode, pid: usize) -> SysResult {
     Err(SysError::NotFound)
 }
 
-// uint getpid(void);
+// u32 getpid(void);
 fn sys_getpid(proc: ProcessNode) -> SysResult {
     Ok(unsafe { proc.with(|p| p.pid as usize) })
 }
@@ -147,6 +147,19 @@ fn sys_readdir(proc: ProcessNode, fd: usize, pos: usize, entry: VirtAddr) -> Sys
     }
 }
 
+// bool stat(uint fd, Stat *entry);
+fn sys_stat(proc: ProcessNode, fd: usize, stat: VirtAddr) -> SysResult {
+    unsafe {
+        proc.with(|proc| {
+            let Some(fd) = proc.files.get(fd).and_then(|f| f.as_ref()) else {
+                return Err(SysError::BadFd);
+            };
+            stat.copy_type_to(&proc.pagetable, &fd.stat()?, None)?;
+            Ok(1)
+        })
+    }
+}
+
 // void chdir(const char *path, uint len);
 fn sys_chdir(proc: ProcessNode, path: VirtAddr, len: usize) -> SysResult {
     let Ok(mut buf) = Vec::try_with_capacity(len) else {
@@ -166,6 +179,54 @@ fn sys_chdir(proc: ProcessNode, path: VirtAddr, len: usize) -> SysResult {
             Ok(0)
         })
     }
+}
+
+// u32 spawn(const char *path, uint pathlen, const struct string **argv, uint nargs);
+fn sys_spawn(
+    proc: ProcessNode,
+    path: VirtAddr,
+    pathlen: usize,
+    argv: VirtAddr,
+    nargs: usize,
+) -> SysResult {
+    let Ok(mut buf) = Vec::try_with_capacity(pathlen) else {
+        return Err(SysError::NoMem);
+    };
+
+    let mut args = Vec::new();
+    let Ok(mut arg_slices) = Vec::try_with_capacity(nargs) else {
+        return Err(SysError::NoMem);
+    };
+
+    let cwd = unsafe {
+        proc.with(|proc| {
+            path.copy_from(&proc.pagetable, buf.spare_capacity_mut())?;
+            buf.set_len(pathlen);
+
+            for i in 0..nargs {
+                let ptr: VirtAddr = (argv + (i * 2) * 8).copy_type_from(&proc.pagetable)?;
+                let len: usize = (argv + (i * 2 + 1) * 8).copy_type_from(&proc.pagetable)?;
+                if args.try_reserve(len).is_err() {
+                    return Err(SysError::NoMem);
+                }
+
+                ptr.copy_from(&proc.pagetable, &mut args.spare_capacity_mut()[..len])?;
+                args.set_len(args.len() + len);
+            }
+
+            let mut buf = &args[..];
+            for i in 0..nargs {
+                let (arg, rest) =
+                    buf.split_at((argv + (i * 2 + 1) * 8).copy_type_from(&proc.pagetable)?);
+                arg_slices.push(arg);
+                buf = rest;
+            }
+
+            Ok(proc.cwd.clone())
+        })
+    }?;
+
+    Process::spawn(Path::new(&buf), cwd, &arg_slices).map(|pid| pid as usize)
 }
 
 pub fn handle_syscall(proc: ProcessNode) {
@@ -191,6 +252,8 @@ pub fn handle_syscall(proc: ProcessNode) {
         Some(Sys::Write) => sys_write(proc, a0, a1, VirtAddr(a2), a3),
         Some(Sys::Readdir) => sys_readdir(proc, a0, a1, VirtAddr(a2)),
         Some(Sys::Chdir) => sys_chdir(proc, VirtAddr(a0), a1),
+        Some(Sys::Spawn) => sys_spawn(proc, VirtAddr(a0), a1, VirtAddr(a2), a3),
+        Some(Sys::Stat) => sys_stat(proc, a0, VirtAddr(a1)),
         None => Err(SysError::InvalidSyscall),
     };
 

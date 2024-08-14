@@ -131,7 +131,7 @@ pub struct Process {
 pub const USER_TRAP_FRAME: VirtAddr = VirtAddr(USER_TRAP_VEC.0 - Page::SIZE);
 
 impl Process {
-    pub fn spawn(path: &Path, cwd: Fd, args: &[&[u8]]) -> Result<(), SysError> {
+    pub fn spawn(path: &Path, cwd: Fd, args: &[&[u8]]) -> Result<u32, SysError> {
         let file = Vfs::open(path, OpenFlags::empty())?;
         let stat = file.stat()?;
         let Ok(mut buf) = Vec::try_with_capacity(stat.size) else {
@@ -212,10 +212,11 @@ impl Process {
             VirtAddr(sp).copy_type_to(&pt, &arg, None)?;
         }
 
+        let pid = NEXTPID.fetch_add(1, Ordering::Relaxed);
         let success = Self::enqueue_process(unsafe {
             let proc = ProcessNode(NonNull::new_unchecked(Box::into_raw(Box::try_new(
                 SpinLocked::new(Process {
-                    pid: NEXTPID.fetch_add(1, Ordering::Relaxed),
+                    pid,
                     pagetable: pt,
                     trapframe,
                     status: ProcStatus::Idle,
@@ -238,7 +239,7 @@ impl Process {
             proc
         });
 
-        success.then_some(()).ok_or(SysError::NoMem)
+        success.then_some(pid).ok_or(SysError::NoMem)
     }
 
     pub unsafe fn return_into(mut this: Guard<Process>) -> ! {

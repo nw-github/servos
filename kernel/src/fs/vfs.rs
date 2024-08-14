@@ -17,6 +17,7 @@ use super::{
     DirEntry, FileSystem, FsResult, OpenFlags, VNode,
 };
 
+#[derive(Clone)]
 pub struct Fd {
     node: VNode,
     dev: Arc<dyn FileSystem>,

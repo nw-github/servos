@@ -14,6 +14,7 @@
 #![feature(ptr_sub_ptr)]
 #![feature(cell_update)]
 #![feature(maybe_uninit_slice)]
+#![feature(maybe_uninit_as_bytes)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use alloc::sync::Arc;

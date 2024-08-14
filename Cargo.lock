@@ -62,7 +62,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 name = "init"
 version = "0.1.0"
 dependencies = [
- "shared",
+ "userstd",
 ]
 
 [[package]]
@@ -70,6 +70,13 @@ name = "linked_list_allocator"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9afa463f5405ee81cdb9cc2baf37e08ec7e4c8209442b5d72c04cfb2cd6e6286"
+
+[[package]]
+name = "ls"
+version = "0.1.0"
+dependencies = [
+ "userstd",
+]
 
 [[package]]
 name = "memoffset"
@@ -229,3 +236,10 @@ name = "unsafe_unwrap"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1230ec65f13e0f9b28d789da20d2d419511893ea9dac2c1f4ef67b8b14e5da80"
+
+[[package]]
+name = "userstd"
+version = "0.1.0"
+dependencies = [
+ "shared",
+]

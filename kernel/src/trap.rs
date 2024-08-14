@@ -52,7 +52,7 @@ impl TrapCause {
 }
 
 pub const USER_TRAP_VEC: VirtAddr = VirtAddr(VirtAddr::MAX.0 - Page::SIZE);
-pub const TIMER_INTERVAL: usize = 10_000_000;
+pub const TIMER_INTERVAL: usize = 10_000_000/2;
 
 #[naked]
 #[link_section = ".text.trap"]
@@ -204,11 +204,6 @@ pub extern "C" fn handle_u_trap(mut sepc: usize, proc: ProcessNode) -> ! {
     match TrapCause::current() {
         Ok(TrapCause::ExternalIntr) => handle_external_intr(),
         Ok(TrapCause::TimerIntr) => {
-            println!(
-                "Trap from process with PID {} on hart {}: Timer!",
-                unsafe { proc.with(|p| p.pid) },
-                r_tp(),
-            );
             _ = sbi::timer::set_timer(r_time() + TIMER_INTERVAL);
             must_yield = true;
         }
