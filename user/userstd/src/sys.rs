@@ -97,6 +97,10 @@ pub fn chdir(path: impl AsRef<[u8]>) -> Result<(), SysError> {
     syscall(Sys::Chdir, path.as_ptr() as usize, path.len(), 0, 0).map(|_| ())
 }
 
+pub fn sbrk(inc: isize) -> Result<*mut u8, SysError> {
+    syscall(Sys::Sbrk, inc as usize, 0, 0, 0).map(|addr| addr as *mut u8)
+}
+
 #[repr(C)]
 pub struct String {
     buf: *const u8,

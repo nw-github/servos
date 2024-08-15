@@ -197,10 +197,11 @@ extern "riscv-interrupt-s" fn sv_trap_vec() {
     }
 }
 
-pub extern "C" fn handle_u_trap(mut sepc: usize, proc: ProcessNode) -> ! {
+pub extern "C" fn handle_u_trap(mut sepc: usize, paddr: ProcessNode) -> ! {
     w_stvec(sv_trap_vec as usize);
 
     let mut must_yield = false;
+    let proc = unsafe { paddr.0.as_ref() };
     match TrapCause::current() {
         Ok(TrapCause::ExternalIntr) => handle_external_intr(),
         Ok(TrapCause::TimerIntr) => {
@@ -216,12 +217,10 @@ pub extern "C" fn handle_u_trap(mut sepc: usize, proc: ProcessNode) -> ! {
             | TrapCause::StorePageFault
             | TrapCause::InstrPageFault),
         ) => {
-            let pid = unsafe {
-                proc.with(|mut proc| {
-                    proc.killed = true;
-                    proc.pid
-                })
-            };
+            let pid = proc.with(|mut proc| {
+                proc.killed = true;
+                proc.pid
+            });
 
             println!(
                 "PID {pid} page fault ({cause:?}) on hart {} at address {:#x}",
@@ -230,12 +229,10 @@ pub extern "C" fn handle_u_trap(mut sepc: usize, proc: ProcessNode) -> ! {
             );
         }
         Ok(unk) => {
-            let pid = unsafe {
-                proc.with(|mut proc| {
-                    proc.killed = true;
-                    proc.pid
-                })
-            };
+            let pid = proc.with(|mut proc| {
+                proc.killed = true;
+                proc.pid
+            });
             println!(
                 "ETrap from process with PID {pid} on hart {}: exception {unk:?} raised, killing process",
                 r_tp(),
@@ -244,21 +241,20 @@ pub extern "C" fn handle_u_trap(mut sepc: usize, proc: ProcessNode) -> ! {
         Err(cause) => panic!("Unhandled trap: no match for cause {cause:#x}"),
     }
 
-    unsafe {
-        proc.with(move |mut p| {
-            (*p.trapframe)[Reg::PC] = sepc;
-            if p.killed {
-                proc.destroy(p); // proc is invalidated here
+    proc.with(|mut proc| {
+        proc.trapframe()[Reg::PC] = sepc;
+        unsafe {
+            if proc.killed {
+                paddr.destroy(proc); // proc is invalidated here
             } else if !must_yield {
-                Process::return_into(p);
-            } else if !Scheduler::take(proc) {
-                println!("Scheduler::take failed for PID {}, OOM!", p.pid);
-                proc.destroy(p);
+                Process::return_into(proc);
+            } else if !Scheduler::take(paddr) {
+                println!("Scheduler::take failed for PID {}, OOM!", proc.pid);
+                paddr.destroy(proc);
                 /* OOM */
             }
-        })
-    }
-
+        }
+    });
     Scheduler::yield_hart()
 }
 

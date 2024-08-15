@@ -45,6 +45,10 @@ impl<T> SpinLocked<T> {
             .map(|_| Guard::new(token, self))
     }
 
+    pub fn with<U>(&self, f: impl FnOnce(Guard<T>) -> U) -> U {
+        f(self.lock())
+    }
+
     unsafe fn unlock(&self) {
         self.locked.store(false, Ordering::Release)
     }

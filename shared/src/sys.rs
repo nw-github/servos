@@ -14,6 +14,7 @@ pub enum Sys {
     Chdir,
     Spawn,
     Stat,
+    Sbrk,
 }
 
 #[derive(strum::FromRepr, Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +36,13 @@ pub enum SysError {
 
 impl From<AllocError> for SysError {
     fn from(_: AllocError) -> Self {
+        Self::NoMem
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl From<alloc::collections::TryReserveError> for SysError {
+    fn from(_: alloc::collections::TryReserveError) -> Self {
         Self::NoMem
     }
 }

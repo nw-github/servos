@@ -120,12 +120,12 @@ impl ProcessNode {
 pub struct Process {
     pub pid: u32,
     pub pagetable: Box<PageTable>,
-    /// This can't be stored as a Box because it will be manipulated from user_trap_vec
-    pub trapframe: *mut TrapFrame,
+    trapframe: *mut TrapFrame,
     pub status: ProcStatus,
     pub killed: bool,
     pub files: HoleArray<Fd, 32>,
     pub cwd: Fd,
+    pub brk: VirtAddr,
 }
 
 pub const USER_TRAP_FRAME: VirtAddr = VirtAddr(USER_TRAP_VEC.0 - Page::SIZE);
@@ -134,9 +134,7 @@ impl Process {
     pub fn spawn(path: &Path, cwd: Fd, args: &[&[u8]]) -> Result<u32, SysError> {
         let file = Vfs::open(path, OpenFlags::empty())?;
         let stat = file.stat()?;
-        let Ok(mut buf) = Vec::try_with_capacity(stat.size) else {
-            return Err(SysError::NoMem);
-        };
+        let mut buf = Vec::try_with_capacity(stat.size)?;
         let Some(file) = ElfFile::new(file.read(u64::MAX, buf.spare_capacity_mut())?) else {
             return Err(SysError::InvalidArgument);
         };
@@ -183,10 +181,8 @@ impl Process {
                 }
             }
 
-            highest_va = highest_va.max(base);
+            highest_va = highest_va.max(base + phdr.memsz as usize);
         }
-
-        _ = highest_va; // heap
 
         // allocate 1MiB of stack
         let mut sp: usize = USER_TRAP_FRAME.0 - Page::SIZE;
@@ -194,15 +190,11 @@ impl Process {
             return Err(SysError::NoMem);
         }
 
-        let mut ptrs = Vec::new();
+        let mut ptrs = Vec::try_with_capacity(args.len() + 1)?;
         for arg in core::iter::once(path.as_ref()).chain(args.iter().cloned()) {
             // stack is already zeroed, so just add 1 for the null terminator
             sp -= arg.len() + 1;
             VirtAddr(sp).copy_to(&pt, arg, None)?;
-
-            if ptrs.try_reserve(1).is_err() {
-                return Err(SysError::NoMem);
-            }
             ptrs.push(sp);
         }
 
@@ -223,6 +215,7 @@ impl Process {
                     killed: false,
                     files: HoleArray::empty(),
                     cwd,
+                    brk: highest_va.next_page(),
                 }),
             )?)));
 
@@ -250,6 +243,12 @@ impl Process {
             (*this.trapframe).ksp = get_hart_info().sp.0 as *mut u8;
             trap::return_to_user(Guard::drop_and_keep_token(this), satp)
         }
+    }
+
+    pub fn trapframe(&mut self) -> &mut TrapFrame {
+        // Safety: Process owns the trapframe, but because it can be modified from user_trap_vec
+        // it can't be stored as an owned Box
+        unsafe { &mut *self.trapframe }
     }
 
     fn enqueue_process(proc: ProcessNode) -> bool {

@@ -241,5 +241,6 @@ checksum = "1230ec65f13e0f9b28d789da20d2d419511893ea9dac2c1f4ef67b8b14e5da80"
 name = "userstd"
 version = "0.1.0"
 dependencies = [
+ "linked_list_allocator",
  "shared",
 ]

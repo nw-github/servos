@@ -82,43 +82,34 @@ fn printdir(dir: impl AsRef<[u8]>, name: bool, all: bool) -> bool {
 }
 
 #[no_mangle]
-extern "C" fn _start(argc: usize, argv: *const *const u8) {
-    // open stdout
-    _ = sys::open("/dev/uart0", OpenFlags::ReadWrite).unwrap();
-    unsafe {
-        let args = core::slice::from_raw_parts(argv, argc);
-        let args = args[1..]
-            .iter()
-            .map(|arg| CStr::from_ptr(arg.cast()).to_bytes());
+fn main(args: &[*const u8]) -> usize {
+    let args = args[1..]
+        .iter()
+        .map(|arg| unsafe { CStr::from_ptr(arg.cast()).to_bytes() });
 
-        let mut all = false;
-        for arg in args.clone() {
-            if !arg.starts_with(b"-") {
-                continue;
-            }
-
-            if arg.contains(&b'a') {
-                all = true;
-            }
+    let mut all = false;
+    for arg in args.clone() {
+        if !arg.starts_with(b"-") {
+            continue;
         }
 
-        let mut printed = false;
-        for path in args.clone() {
-            if path.starts_with(b"-") {
-                continue;
-            }
-
-            if printed {
-                println!();
-            }
-            printdir(path, printed, all);
-            printed = true;
+        if arg.contains(&b'a') {
+            all = true;
         }
     }
 
-    _ = sys::kill(sys::getpid());
-    #[allow(deref_nullptr)]
-    unsafe {
-        *core::ptr::null_mut::<u8>() = 0;
+    let mut printed = false;
+    for path in args.clone() {
+        if path.starts_with(b"-") {
+            continue;
+        }
+
+        if printed {
+            println!();
+        }
+        printdir(path, printed, all);
+        printed = true;
     }
+
+    0
 }

@@ -118,6 +118,16 @@ impl PageTableEntry {
     pub const fn perms(self) -> Pte {
         Pte::from_bits_retain(self.0 & 0x3ff)
     }
+
+    unsafe fn free(self) {
+        match self.next() {
+            PteLink::PageTable(pt) => drop(unsafe { Box::from_raw(pt) }),
+            PteLink::Leaf(page) if self.is_owned() => {
+                drop(unsafe { Box::from_raw(page as *mut Page) });
+            }
+            _ => {}
+        }
+    }
 }
 
 #[repr(C, align(0x1000))] // Page::SIZE
@@ -162,7 +172,7 @@ impl PageTable {
         let [first, last] = [page_number(pa.0), page_number(pa.0.wrapping_add(size) - 1)];
         assert!(first < VirtAddr::MAX.0 && last < VirtAddr::MAX.0 && first <= last);
         for (i, page) in (first..=last).step_by(Page::SIZE).enumerate() {
-            if !self.map_page_raw(PhysAddr(page), va + i * Page::SIZE, perms) {
+            if !self.map_page_raw(PhysAddr(page), va + i * Page::SIZE, perms & !Pte::Owned) {
                 return false;
             }
         }
@@ -207,6 +217,37 @@ impl PageTable {
         self.map_pages(start, VirtAddr(start.0), size, perms)
     }
 
+    pub fn unmap_pages(&mut self, va: VirtAddr, size: usize) {
+        assert!(size != 0);
+
+        let [first, last] = [page_number(va.0), page_number(va.0.wrapping_add(size) - 1)];
+        assert!(first < VirtAddr::MAX.0 && last < VirtAddr::MAX.0 && first <= last);
+        for page in (first..=last).step_by(Page::SIZE) {
+            self.unmap_page(VirtAddr(page));
+        }
+    }
+
+    pub fn unmap_page(&mut self, va: VirtAddr) -> bool {
+        let mut pt = self;
+        for level in (0..SV39_LEVELS).rev() {
+            let entry = &mut pt.0[va.vpn(level)];
+            match entry.next() {
+                PteLink::PageTable(next) => pt = unsafe { &mut *next },
+                PteLink::Leaf(_) => {
+                    assert!(level == 0, "Page table level {level} is a leaf node");
+                    unsafe {
+                        entry.free();
+                    }
+                    *entry = PageTableEntry(0);
+                    return true;
+                }
+                PteLink::Invalid => break,
+            }
+        }
+
+        false
+    }
+
     pub fn make_satp(this: *const PageTable) -> usize {
         ((SATP_MODE_SV39 as usize) << 60) | (this as usize >> 12)
     }
@@ -243,12 +284,8 @@ impl PageTable {
 impl Drop for PageTable {
     fn drop(&mut self) {
         for &entry in self.0.iter() {
-            match entry.next() {
-                PteLink::PageTable(pt) => drop(unsafe { Box::from_raw(pt) }),
-                PteLink::Leaf(page) if entry.is_owned() => {
-                    drop(unsafe { Box::from_raw(page as *mut Page) });
-                }
-                _ => {}
+            unsafe {
+                entry.free();
             }
         }
     }
@@ -355,6 +392,14 @@ impl VirtAddr {
         }
     }
 
+    pub fn next_page(self) -> VirtAddr {
+        VirtAddr(page_number(self.0 + Page::SIZE))
+    }
+
+    pub fn page(self) -> VirtAddr {
+        VirtAddr(page_number(self.0))
+    }
+
     const fn vpn(self, level: usize) -> usize {
         (self.0 >> (12 + level * 9)) & 0x1ff
     }
@@ -383,6 +428,30 @@ impl core::ops::Sub<usize> for VirtAddr {
 
     fn sub(self, rhs: usize) -> Self::Output {
         VirtAddr(self.0 - rhs)
+    }
+}
+
+impl core::ops::BitAnd<usize> for VirtAddr {
+    type Output = VirtAddr;
+
+    fn bitand(self, rhs: usize) -> Self::Output {
+        VirtAddr(self.0 & rhs)
+    }
+}
+
+impl core::ops::BitOr<usize> for VirtAddr {
+    type Output = VirtAddr;
+
+    fn bitor(self, rhs: usize) -> Self::Output {
+        VirtAddr(self.0 | rhs)
+    }
+}
+
+impl core::ops::BitXor<usize> for VirtAddr {
+    type Output = VirtAddr;
+
+    fn bitxor(self, rhs: usize) -> Self::Output {
+        VirtAddr(self.0 ^ rhs)
     }
 }
 
