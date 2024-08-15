@@ -9,40 +9,49 @@ use super::Device;
 /*
 
 
-[hello world..........]
-    ^---r
-      ^---w
-      ^---we
-    ^---re
+[hllo...........]
+ ^---r
+  ^---w
+     ^---we
+ ^---re
 */
 
 struct Buffer {
-    buffer: [u8; 256],
+    buf: [u8; 256],
     read: usize,
     write: usize,
     wend: usize,
     rend: usize,
+    esc: Option<u8>,
 }
 
 impl Buffer {
     const fn new() -> Self {
         Self {
-            buffer: [0; 256],
+            buf: [0; 256],
             read: 0,
             write: 0,
             wend: 0,
             rend: 0,
+            esc: None,
         }
     }
 
     fn put(&mut self, ch: u8) -> bool {
+        if let Some(esc) = self.esc {
+            self.handle_esc(esc, ch);
+            return true;
+        }
+
         match ch {
+            0x1b => self.esc = Some(ch),
             b'\r' => {
-                if !self.push_ch(b'\n') {
+                if self.wend - self.read == self.buf.len() {
                     return false;
                 }
 
                 self.write = self.wend;
+                self.push_ch(b'\n');
                 self.rend = self.wend;
                 print!("\r\n");
             }
@@ -50,7 +59,20 @@ impl Buffer {
                 if self.write > self.rend {
                     self.write -= 1;
                     self.wend -= 1;
-                    print!("\x08 \x08");
+
+                    if self.wend == self.write {
+                        print!("\x08 \x08");
+                    } else {
+                        print!("\x08");
+                        for i in self.write..self.wend {
+                            self.buf[i % self.buf.len()] = self.buf[(i + 1) % self.buf.len()];
+                            print!("{}", self.buf[i % self.buf.len()] as char);
+                        }
+                        print!(" ");
+                        for _ in self.write..=self.wend {
+                            print!("\x08");
+                        }
+                    }
                 }
             }
             ch => {
@@ -59,6 +81,12 @@ impl Buffer {
                 }
 
                 print!("{}", ch as char);
+                for i in self.write..self.wend {
+                    print!("{}", self.buf[i % self.buf.len()] as char);
+                }
+                for _ in self.write..self.wend {
+                    print!("\x08");
+                }
             }
         }
 
@@ -69,19 +97,55 @@ impl Buffer {
         let count = (self.rend - self.read).min(buf.len());
         let slice = &mut buf[..count];
         for (i, ch) in slice.iter_mut().enumerate() {
-            *ch = MaybeUninit::new(self.buffer[(self.read + i) % self.buffer.len()]);
+            *ch = MaybeUninit::new(self.buf[(self.read + i) % self.buf.len()]);
         }
 
         self.read += count;
         unsafe { MaybeUninit::slice_assume_init_mut(slice) }
     }
 
+    fn handle_esc(&mut self, esc: u8, ch: u8) {
+        // maybe makes sense to let applications handle escape sequences but whatever for now
+        match (esc, ch) {
+            (0x1b, b'[') | (b'[', b'1') | (b'1', b';') | (b';', b'5') => {
+                return self.esc = Some(ch);
+            }
+            (b'[', b'D') => {
+                // LARROW
+                if self.write > self.rend {
+                    self.write -= 1;
+                    print!("\x1b[D");
+                }
+            }
+            (b'5', b'D') => {
+                // CTRL + LARROW
+            }
+            (b'[', b'C') => {
+                // RARROW
+                if self.write < self.wend {
+                    self.write += 1;
+                    print!("\x1b[C");
+                }
+            }
+            (b'5', b'C') => {
+                // CTRL + RARROW
+            }
+            _ => {}
+        }
+
+        self.esc = None;
+    }
+
     fn push_ch(&mut self, ch: u8) -> bool {
-        if self.wend - self.read == self.buffer.len() {
+        if self.wend - self.read == self.buf.len() {
             return false;
         }
 
-        self.buffer[self.write % self.buffer.len()] = ch;
+        for i in (self.write..self.wend).rev() {
+            self.buf[(i + 1) % self.buf.len()] = self.buf[i % self.buf.len()];
+        }
+
+        self.buf[self.write % self.buf.len()] = ch;
         self.write += 1;
         self.wend += 1;
         true
