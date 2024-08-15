@@ -15,6 +15,7 @@ pub enum Sys {
     Spawn,
     Stat,
     Sbrk,
+    Waitpid,
 }
 
 #[derive(strum::FromRepr, Debug, Clone, Copy, PartialEq, Eq)]

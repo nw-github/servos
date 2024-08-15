@@ -168,6 +168,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sh"
+version = "0.1.0"
+dependencies = [
+ "userstd",
+]
+
+[[package]]
 name = "shared"
 version = "0.1.0"
 dependencies = [
@@ -223,6 +230,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "tests"
+version = "0.1.0"
+dependencies = [
+ "userstd",
 ]
 
 [[package]]

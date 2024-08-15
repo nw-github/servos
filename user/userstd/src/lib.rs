@@ -11,9 +11,14 @@ pub extern crate alloc;
 
 #[panic_handler]
 fn on_panic(info: &core::panic::PanicInfo) -> ! {
-    println!("panic from init: {info}");
+    println!("panic: {info}");
 
     _ = sys::kill(sys::getpid());
+
+    #[allow(deref_nullptr)]
+    unsafe {
+        *core::ptr::null_mut::<u8>() = 0;
+    }
     loop {}
 }
 
@@ -30,7 +35,6 @@ extern "C" fn _start(argc: usize, argv: *const *const u8) {
     let bottom = sys::sbrk(0).unwrap();
     let top = sys::sbrk(1024 * 1024).expect("sbrk failed"); // ask for 1mib of heap
 
-    #[allow(deref_nullptr)]
     unsafe {
         mem::init(bottom, top);
 
@@ -41,6 +45,6 @@ extern "C" fn _start(argc: usize, argv: *const *const u8) {
         });
         // TODO: call exit
         _ = sys::kill(sys::getpid());
-        *core::ptr::null_mut::<u8>() = 0;
+        panic!("exit returned");
     }
 }

@@ -8,7 +8,7 @@ use shared::{
 use crate::{
     fs::{path::Path, vfs::Vfs, FsError},
     hart::POWER,
-    proc::{Process, Reg, PROC_LIST},
+    proc::{ProcStatus, Process, Reg, PROC_LIST},
     vmm::{Pte, VirtAddr},
 };
 
@@ -48,7 +48,7 @@ fn sys_kill(_: &Proc, pid: usize) -> SysResult {
         return Err(SysError::InvalidArgument);
     }
 
-    for &mut proc in PROC_LIST.lock().iter_mut() {
+    for proc in PROC_LIST.lock().iter() {
         let success = unsafe {
             proc.with(|mut proc| {
                 // TODO: permission check
@@ -213,6 +213,22 @@ fn sys_spawn(
     Process::spawn(Path::new(&buf), cwd, &arg_slices).map(|pid| pid as usize)
 }
 
+// void waitpid(u32 pid);
+fn sys_waitpid(proc: &Proc, pid: usize) -> SysResult {
+    if proc.lock().pid as usize == pid {
+        return Err(SysError::InvalidArgument);
+    }
+
+    for &rhs in PROC_LIST.lock().iter() {
+        if unsafe { rhs.with(|proc| proc.pid as usize == pid) } {
+            proc.lock().status = ProcStatus::Waiting(pid as u32);
+            break;
+        }
+    }
+
+    Ok(0)
+}
+
 // void *sbrk(isize inc);
 fn sys_sbrk(proc: &Proc, inc: isize) -> SysResult {
     let mut proc = proc.lock();
@@ -225,7 +241,10 @@ fn sys_sbrk(proc: &Proc, inc: isize) -> SysResult {
         new_brk = new_brk.next_page();
         if inc < 0 {
             proc.pagetable.unmap_pages(new_brk, cur_brk.0 - new_brk.0);
-        } else if !proc.pagetable.map_new_pages(cur_brk, new_brk.0 - cur_brk.0, Pte::Urw) {
+        } else if !proc
+            .pagetable
+            .map_new_pages(cur_brk, new_brk.0 - cur_brk.0, Pte::Urw)
+        {
             return Err(SysError::NoMem);
         }
         proc.brk = new_brk;
@@ -258,6 +277,7 @@ pub fn handle_syscall(proc: &Proc) {
         Some(Sys::Spawn) => sys_spawn(proc, VirtAddr(a0), a1, VirtAddr(a2), a3),
         Some(Sys::Stat) => sys_stat(proc, a0, VirtAddr(a1)),
         Some(Sys::Sbrk) => sys_sbrk(proc, a0 as isize),
+        Some(Sys::Waitpid) => sys_waitpid(proc, a0),
         None => Err(SysError::InvalidSyscall),
     };
 

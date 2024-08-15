@@ -1,4 +1,4 @@
-use core::{convert::Infallible, mem::MaybeUninit};
+use core::{convert::Infallible, marker::PhantomData, mem::MaybeUninit};
 
 pub use shared::sys::*;
 
@@ -102,21 +102,44 @@ pub fn sbrk(inc: isize) -> Result<*mut u8, SysError> {
 }
 
 #[repr(C)]
-pub struct String {
+pub struct KString<'a> {
     buf: *const u8,
     len: usize,
+    _pd: PhantomData<&'a u8>,
 }
 
-impl From<&'static str> for String {
-    fn from(value: &'static str) -> Self {
+impl<'a> KString<'a> {
+    pub fn new(value: impl AsRef<[u8]>) -> Self {
+        let value = value.as_ref();
         Self {
             buf: value.as_ptr(),
-            len: value.len()
+            len: value.len(),
+            _pd: PhantomData,
         }
     }
 }
 
-pub fn spawn(path: impl AsRef<[u8]>, args: &[String]) -> Result<u32, SysError> {
+impl<'a> From<&'a [u8]> for KString<'a> {
+    fn from(value: &'a [u8]) -> Self {
+        Self {
+            buf: value.as_ptr(),
+            len: value.len(),
+            _pd: PhantomData,
+        }
+    }
+}
+
+impl<'a> From<&'a str> for KString<'a> {
+    fn from(value: &'a str) -> Self {
+        Self {
+            buf: value.as_ptr(),
+            len: value.len(),
+            _pd: PhantomData,
+        }
+    }
+}
+
+pub fn spawn(path: impl AsRef<[u8]>, args: &[KString]) -> Result<u32, SysError> {
     let path = path.as_ref();
     syscall(
         Sys::Spawn,
@@ -126,4 +149,8 @@ pub fn spawn(path: impl AsRef<[u8]>, args: &[String]) -> Result<u32, SysError> {
         args.len(),
     )
     .map(|pid| pid as u32)
+}
+
+pub fn waitpid(pid: u32) -> Result<(), SysError> {
+    syscall(Sys::Waitpid, pid as usize, 0, 0, 0).map(|_| ())
 }

@@ -10,7 +10,7 @@ use crate::{
     dev::console::Console,
     plic::PLIC,
     println,
-    proc::{Process, ProcessNode, Reg, Scheduler, USER_TRAP_FRAME},
+    proc::{ProcStatus, Process, ProcessNode, Reg, Scheduler, USER_TRAP_FRAME},
     riscv::{
         enable_intr, r_scause, r_time, w_sie, w_stvec, InterruptToken, SIE_SEIE, SIE_SSIE, SIE_STIE,
     },
@@ -251,7 +251,7 @@ pub extern "C" fn handle_u_trap(mut sepc: usize, paddr: ProcessNode) -> ! {
         unsafe {
             if proc.killed {
                 paddr.destroy(proc); // proc is invalidated here
-            } else if !must_yield {
+            } else if !must_yield && !matches!(proc.status, ProcStatus::Waiting(_)) {
                 Process::return_into(proc);
             } else if !Scheduler::take(paddr) {
                 println!("Scheduler::take failed for PID {}, OOM!", proc.pid);

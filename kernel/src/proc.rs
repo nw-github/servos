@@ -24,9 +24,11 @@ use shared::{io::OpenFlags, sys::SysError};
 
 static NEXTPID: AtomicU32 = AtomicU32::new(0);
 
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub enum ProcStatus {
     Idle,
     Running,
+    Waiting(u32),
 }
 
 #[repr(usize)]
@@ -103,10 +105,21 @@ impl ProcessNode {
     /// # Safety
     /// The process must not be awaiting scheduling or running on any hart.
     pub unsafe fn destroy(self, lock: Guard<Process>) {
+        let mypid = lock.pid;
         let _token = Guard::forget_and_keep_token(lock);
         let mut list = PROC_LIST.lock();
         if let Some(i) = list.iter().position(|&rhs| rhs == self) {
             list.swap_remove_back(i);
+        }
+
+        for proc in list.iter() {
+            unsafe {
+                proc.with(|mut proc| {
+                    if proc.status == ProcStatus::Waiting(mypid) {
+                        proc.status = ProcStatus::Idle;
+                    }
+                })
+            }
         }
         unsafe { self.free() };
     }
@@ -185,23 +198,25 @@ impl Process {
         }
 
         // allocate 1MiB of stack
-        let mut sp: usize = USER_TRAP_FRAME.0 - Page::SIZE;
-        if !pt.map_new_pages(VirtAddr(sp - 0x100000), 0x100000, Pte::Urw) {
+        const STACK_SZ: usize = 0x100000;
+
+        let mut sp = USER_TRAP_FRAME - Page::SIZE;
+        if !pt.map_new_pages(sp - STACK_SZ, STACK_SZ, Pte::Urw) {
             return Err(SysError::NoMem);
         }
 
         let mut ptrs = Vec::try_with_capacity(args.len() + 1)?;
         for arg in core::iter::once(path.as_ref()).chain(args.iter().cloned()) {
             // stack is already zeroed, so just add 1 for the null terminator
-            sp -= arg.len() + 1;
-            VirtAddr(sp).copy_to(&pt, arg, None)?;
+            sp.0 -= arg.len() + 1;
+            sp.copy_to(&pt, arg, None)?;
             ptrs.push(sp);
         }
 
-        sp -= sp % core::mem::align_of::<usize>();
+        sp = VirtAddr(sp.0 & !(core::mem::align_of::<VirtAddr>() - 1));
         for &arg in ptrs.iter().rev() {
-            sp -= core::mem::size_of::<usize>();
-            VirtAddr(sp).copy_type_to(&pt, &arg, None)?;
+            sp.0 -= core::mem::size_of::<VirtAddr>();
+            sp.copy_type_to(&pt, &arg, None)?;
         }
 
         let pid = NEXTPID.fetch_add(1, Ordering::Relaxed);
@@ -223,9 +238,9 @@ impl Process {
             addr_of_mut!((*trapframe).handle_trap).write(trap::handle_u_trap);
             (*trapframe).ksatp = PageTable::make_satp(addr_of!(crate::KPAGETABLE));
             (*trapframe).regs[Reg::PC as usize] = file.ehdr.entry as usize;
-            (*trapframe).regs[Reg::SP as usize] = sp;
+            (*trapframe).regs[Reg::SP as usize] = sp.0;
             (*trapframe).regs[Reg::A0 as usize] = args.len() + 1;
-            (*trapframe).regs[Reg::A1 as usize] = sp;
+            (*trapframe).regs[Reg::A1 as usize] = sp.0;
 
             proc
         });
@@ -286,16 +301,20 @@ impl Scheduler {
     }
 
     pub fn try_find_execute() {
-        // can't use if/let or we will hold the scheduler lock forever and deadlock
-        let Some(next) = SCHEDULER
+        if let Some((next, mut sched)) = SCHEDULER
             .try_lock()
-            .and_then(|mut s| s.awaiting.pop_front())
-        else {
-            return;
-        };
-
-        unsafe {
-            next.with(|proc| Process::return_into(proc));
+            .and_then(|mut s| s.awaiting.pop_front().zip(Some(s)))
+        {
+            unsafe {
+                next.with(|proc| {
+                    if !matches!(proc.status, ProcStatus::Waiting(_)) {
+                        drop(sched);
+                        Process::return_into(proc);
+                    } else {
+                        sched.awaiting.push_back(next);
+                    }
+                });
+            }
         }
     }
 
