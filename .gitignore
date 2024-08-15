@@ -1,5 +1,5 @@
 /target
 .gdbinit
 test
-/initrd
+/initrd/bin
 /initrd.img

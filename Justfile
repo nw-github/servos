@@ -19,3 +19,9 @@ test:
 
     python mkfs.py initrd initrd.img
     cargo r --bin servos
+
+debug-gdb:
+    rust-gdb target/riscv64imac-unknown-none-elf/debug/servos
+
+debug-qemu:
+    qemu-system-riscv64 -s -S -machine virt -nographic -serial mon:stdio -kernel target/riscv64imac-unknown-none-elf/debug/servos
