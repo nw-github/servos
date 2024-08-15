@@ -148,7 +148,7 @@ impl Process {
         let file = Vfs::open_in_cwd(&cwd, path, OpenFlags::empty())?;
         let stat = file.stat()?;
         let mut buf = Vec::try_with_capacity(stat.size)?;
-        let Some(file) = ElfFile::new(file.read(u64::MAX, buf.spare_capacity_mut())?) else {
+        let Some(file) = ElfFile::new(file.read(0, buf.spare_capacity_mut())?) else {
             return Err(SysError::InvalidArgument);
         };
 
@@ -246,12 +246,10 @@ impl Process {
 
     pub unsafe fn return_into(mut this: Guard<Process>) -> ! {
         this.status = ProcStatus::Running;
-        unsafe {
-            let satp = PageTable::make_satp(&*this.pagetable);
-            (*this.trapframe).hartid = r_tp();
-            (*this.trapframe).ksp = get_hart_info().sp.0 as *mut u8;
-            trap::return_to_user(Guard::drop_and_keep_token(this), satp)
-        }
+        let satp = PageTable::make_satp(&*this.pagetable);
+        this.trapframe().hartid = r_tp();
+        this.trapframe().ksp = get_hart_info().sp.0 as *mut u8;
+        trap::return_to_user(Guard::drop_and_keep_token(this), satp)
     }
 
     pub fn trapframe(&mut self) -> &mut TrapFrame {
@@ -277,7 +275,7 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        drop(unsafe { Box::from_raw(self.trapframe) })
+        drop(unsafe { Box::from_raw(self.trapframe as *mut Page) })
     }
 }
 
