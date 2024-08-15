@@ -180,7 +180,7 @@ impl PageTable {
         true
     }
 
-    pub fn map_new_pages(&mut self, va: VirtAddr, size: usize, perms: Pte) -> bool {
+    pub fn map_new_pages(&mut self, va: VirtAddr, size: usize, perms: Pte, zero: bool) -> bool {
         assert!(perms.intersects(Pte::Rwx));
         assert!(size != 0);
 
@@ -189,7 +189,7 @@ impl PageTable {
             return false;
         }
         for page in (first..=last).step_by(Page::SIZE) {
-            let Ok(pa) = Page::uninit() else {
+            let Ok(pa) = (if zero { Page::zeroed() } else { Page::uninit() }) else {
                 return false;
             };
             if !self.map_page_raw(Box::into_raw(pa).into(), VirtAddr(page), perms | Pte::Owned) {

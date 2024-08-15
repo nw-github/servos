@@ -243,7 +243,7 @@ fn sys_sbrk(proc: &Proc, inc: isize) -> SysResult {
             proc.pagetable.unmap_pages(new_brk, cur_brk.0 - new_brk.0);
         } else if !proc
             .pagetable
-            .map_new_pages(cur_brk, new_brk.0 - cur_brk.0, Pte::Urw)
+            .map_new_pages(cur_brk, new_brk.0 - cur_brk.0, Pte::Urw, true)
         {
             return Err(SysError::NoMem);
         }

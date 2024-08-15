@@ -1,4 +1,8 @@
-use userstd::{alloc::vec::Vec, print, println, sys::{self, RawFd, SysError}};
+use userstd::{
+    alloc::vec::Vec,
+    print, println,
+    sys::{self, RawFd, SysError},
+};
 
 #[repr(u8)]
 #[derive(strum::FromRepr)]

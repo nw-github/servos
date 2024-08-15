@@ -1,3 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["kernel", "shared", "user/bf", "user/init", "user/ls", "user/sh", "user/tests", "user/userstd"]
+members = [
+    "kernel",
+    "shared",
+    "user/bf",
+    "user/cat",
+    "user/init",
+    "user/ls",
+    "user/sh",
+    "user/shutdown",
+    "user/tests",
+    "user/userstd",
+]

@@ -137,7 +137,7 @@ impl FileSystem for InitRd {
             return Err(FsError::InvalidOp);
         }
 
-        let Some(len) = (inode.size as u64).checked_sub(pos) else {
+        let Some(len) = (inode.size as u64).checked_sub(pos).filter(|&len| len != 0) else {
             return Err(FsError::Eof);
         };
 

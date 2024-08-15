@@ -4,22 +4,20 @@
 use core::ffi::CStr;
 
 use bc::{Program, StepResult, Vm};
-use userstd::{
-    alloc::vec::Vec, io::OpenFlags, println, sys::{self, SysError}
-};
+use userstd::println;
 
 mod bc;
 
 // fn repl() -> usize {
 //     let mut buffer = String::new();
-// 
+//
 //     let mut vm = Vm::new();
 //     let mut lbl = false;
 //     loop {
 //         println!(">> ");
 //         let count = stdin.read_to_string(&mut buffer)?;
 //         buffer.truncate(count);
-// 
+//
 //         match &buffer[..] {
 //             "quit" => break Ok(()),
 //             "reset" => vm.reset(),
@@ -41,15 +39,6 @@ mod bc;
 //         }
 //     }
 // }
-
-fn read_file(path: &[u8]) -> Result<Vec<u8>, SysError> {
-    let fd = sys::open(path, OpenFlags::empty())?;
-    let stat = sys::stat(fd)?;
-    let mut buf = userstd::alloc::vec![0; stat.size];
-    let n = sys::read(fd, None, &mut buf)?;
-    buf.truncate(n);
-    Ok(buf)
-}
 
 #[no_mangle]
 fn main(args: &[*const u8]) -> usize {
@@ -76,7 +65,7 @@ fn main(args: &[*const u8]) -> usize {
         return 1;
     };
 
-    let buf = match read_file(program) {
+    let buf = match userstd::io::read_file(program) {
         Ok(buf) => buf,
         Err(err) => {
             println!("error reading file: {err:?}");

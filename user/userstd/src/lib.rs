@@ -1,11 +1,10 @@
 #![no_std]
 
 pub mod mem;
-pub mod print;
+pub mod io;
 pub mod sys;
 
-use io::OpenFlags;
-pub use shared::*;
+use shared::io::OpenFlags;
 
 pub extern crate alloc;
 

@@ -177,7 +177,7 @@ impl Process {
                 perms |= Pte::X;
             }
             let base = VirtAddr(phdr.vaddr as usize);
-            if !pt.map_new_pages(base, phdr.memsz as usize, perms) {
+            if !pt.map_new_pages(base, phdr.memsz as usize, perms, false) {
                 return Err(SysError::NoMem);
             }
 
@@ -197,11 +197,9 @@ impl Process {
         const STACK_SZ: usize = 0x100000;
 
         let mut sp = USER_TRAP_FRAME - Page::SIZE;
-        if !pt.map_new_pages(sp - STACK_SZ, STACK_SZ, Pte::Urw) {
+        if !pt.map_new_pages(sp - STACK_SZ, STACK_SZ, Pte::Urw, true) {
             return Err(SysError::NoMem);
         }
-
-        (sp - STACK_SZ).iter_phys(&pt, STACK_SZ, Pte::empty()).zero();
 
         let mut ptrs = Vec::try_with_capacity(args.len() + 1)?;
         for arg in core::iter::once(path.as_ref()).chain(args.iter().cloned()) {
