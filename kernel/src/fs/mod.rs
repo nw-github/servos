@@ -22,6 +22,7 @@ pub enum FsError {
     CorruptedFs,
     InvalidPerms,
     BadVa,
+    Eof,
 }
 
 impl From<VirtToPhysErr> for FsError {

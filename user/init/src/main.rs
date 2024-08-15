@@ -6,7 +6,7 @@ use core::ffi::CStr;
 use userstd::{
     io::OpenFlags,
     print, println,
-    sys::{self, String},
+    sys::{self, RawFd, String, SysError},
 };
 
 static mut GLOBAL_STATIC: usize = 5;
@@ -54,8 +54,8 @@ fn test_fd_cursor() {
     let mut buf = [0; 8];
     loop {
         match sys::read(fd, u64::MAX, &mut buf) {
-            Ok(0) => break,
             Ok(n) => println!("Read {n} bytes: {:?}", core::str::from_utf8(&buf[..n])),
+            Err(SysError::Eof) => break,
             Err(err) => panic!("Cursor file read error: {err:?}"),
         }
     }
@@ -71,25 +71,34 @@ fn main(args: &[*const u8]) -> usize {
         println!("ARG {i}: {:?}", unsafe { CStr::from_ptr(arg.cast()) });
     }
 
-    test_global_static();
-    test_file_read();
-    test_fd_cursor();
+    print!(">> ");
+    let mut buf = [0; 40];
+    loop {
+        match sys::read(RawFd(0), 0, &mut buf) {
+            Ok(n) if n != 0 => print!("Got a command: {:?}\n>> ", core::str::from_utf8(&buf[..n])),
+            _ => continue,
+        }
+    }
 
-    let pid0 = sys::spawn(
-        "/bin/ls",
-        &[
-            String::from("/"),
-            String::from("/dev"),
-            String::from("bin"),
-            String::from("."),
-        ],
-    )
-    .unwrap();
-    let pid1 = sys::spawn("/bin/ls", &[String::from("/bin/ls")]).unwrap();
-    let pid2 = sys::spawn("/bin/ls", &[String::from("/doesnt-exist")]).unwrap();
-
-    println!("Spawned PID {pid0}, {pid1}, {pid2}!");
-
-    #[allow(clippy::empty_loop)]
-    loop {}
+//     test_global_static();
+//     test_file_read();
+//     test_fd_cursor();
+//
+//     let pid0 = sys::spawn(
+//         "/bin/ls",
+//         &[
+//             String::from("/"),
+//             String::from("/dev"),
+//             String::from("bin"),
+//             String::from("."),
+//         ],
+//     )
+//     .unwrap();
+//     let pid1 = sys::spawn("/bin/ls", &[String::from("/bin/ls")]).unwrap();
+//     let pid2 = sys::spawn("/bin/ls", &[String::from("/doesnt-exist")]).unwrap();
+//
+//     println!("Spawned PID {pid0}, {pid1}, {pid2}!");
+//
+//     #[allow(clippy::empty_loop)]
+//     loop {}
 }

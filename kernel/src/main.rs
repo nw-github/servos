@@ -18,6 +18,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use alloc::sync::Arc;
+use trap::CONSOLE_DEV;
 use core::{
     alloc::Allocator,
     arch::asm,
@@ -323,13 +324,11 @@ unsafe fn init_harts() {
     use alloc::alloc::{Global, Layout};
 
     let mut next_top = USER_TRAP_FRAME - Page::SIZE;
-
-    let tp = r_tp();
     let pt = unsafe { &mut *addr_of_mut!(KPAGETABLE) };
     // TODO: maybe look in the device tree for hart count
     for (i, state) in unsafe { HART_INFO.iter_mut().enumerate() } {
         // TODO: make sure this hart is M + S + U mode capable
-        if i != tp && !matches!(sbi::hsm::hart_get_status(i), Ok(HartState::Stopped)) {
+        if i != r_tp() && !matches!(sbi::hsm::hart_get_status(i), Ok(HartState::Stopped)) {
             continue;
         }
 
@@ -386,10 +385,13 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
         // invalidated once we initialize the heap over it
         init_heap(&dt);
         init_vmem();
-        init_harts();
 
         // dump_fdt::dump_tree(dt).unwrap();
+        if uart_plic_irq.is_some() {
+            _ = CONSOLE_DEV.get_or_init(|| Arc::new(Console::new()));
+        }
 
+        init_harts();
         _start_hart(hartid, PageTable::make_satp(addr_of!(KPAGETABLE)))
     }
 }
@@ -399,9 +401,11 @@ extern "C" fn kinithart(hartid: usize) -> ! {
 
     if BOOT_HART.load(core::sync::atomic::Ordering::SeqCst) == hartid {
         let mut devices = DeviceFs::new();
-        devices
-            .add_device(Path::new("uart0").try_into().unwrap(), Arc::new(Console))
-            .unwrap();
+        if let Some(cons) = unsafe { CONSOLE_DEV.get() } {
+            devices
+                .add_device(Path::new("uart0").try_into().unwrap(), cons.clone())
+                .unwrap();
+        }
         devices
             .add_device(Path::new("null").try_into().unwrap(), Arc::new(NullDevice))
             .unwrap();

@@ -28,6 +28,7 @@ pub fn get_hart_info() -> HartInfo {
     unsafe { HART_INFO[r_tp()] }
 }
 
+#[allow(unused)]
 pub fn set_hart_info(info: HartInfo) {
     unsafe {
         HART_INFO[r_tp()] = info;

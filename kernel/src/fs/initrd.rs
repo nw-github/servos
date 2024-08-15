@@ -7,6 +7,7 @@ use super::{path::Path, FileSystem, FsError, FsResult, VNode};
 
 pub const INITRD_MAGIC: u32 = 0xce3fdefe;
 
+#[allow(unused)]
 pub const INODE_FILE: u16 = 0;
 pub const INODE_DIR: u16 = 1;
 
@@ -45,10 +46,11 @@ pub struct InitRd {
 }
 
 impl InitRd {
-    pub fn new(mut data: &[u8]) -> Option<Self> {
-        assert!(data.as_ptr().is_aligned_to(0x8));
+    pub fn new(data: &[u8]) -> Option<Self> {
+        assert!(data.as_ptr().is_aligned_to(align_of::<InitRdHeader>()));
 
-        let header = read_struct::<InitRdHeader>(&mut data)?;
+        let (header, data) = data.split_at_checked(size_of::<InitRdHeader>())?;
+        let header = unsafe { &*header.as_ptr().cast::<InitRdHeader>() };
         if header.magic != INITRD_MAGIC {
             return None;
         }
@@ -136,7 +138,7 @@ impl FileSystem for InitRd {
         }
 
         let Some(len) = (inode.size as u64).checked_sub(pos) else {
-            return Ok(&mut []);
+            return Err(FsError::Eof);
         };
 
         let len = buf.len().min(len as usize);
@@ -185,12 +187,6 @@ impl FileSystem for InitRd {
                 .ok_or(FsError::CorruptedFs)?,
         ))
     }
-}
-
-fn read_struct<T: Copy>(data: &mut &[u8]) -> Option<T> {
-    let (head, rest) = data.split_at_checked(size_of::<T>())?;
-    *data = rest;
-    unsafe { Some(*head.as_ptr().cast::<T>()) }
 }
 
 fn try_vec_from_slice<T: Clone>(slc: &[T]) -> Option<Vec<T>> {

@@ -23,6 +23,7 @@ impl From<FsError> for SysError {
             FsError::CorruptedFs => SysError::CorruptedFs,
             FsError::InvalidPerms => SysError::InvalidPerms,
             FsError::BadVa => SysError::BadAddr,
+            FsError::Eof => SysError::Eof,
         }
     }
 }

@@ -32,6 +32,7 @@ pub enum SysError {
     CorruptedFs,
     InvalidPerms,
     BadAddr,
+    Eof,
 }
 
 impl From<AllocError> for SysError {

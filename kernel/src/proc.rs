@@ -1,6 +1,6 @@
 use core::{
     ops::{Index, IndexMut},
-    ptr::{addr_of, NonNull},
+    ptr::{addr_of, addr_of_mut, NonNull},
     sync::atomic::{AtomicU32, Ordering},
 };
 
@@ -219,11 +219,9 @@ impl Process {
                 }),
             )?)));
 
-            (*trapframe).proc = proc;
-            (*trapframe).handle_trap = trap::handle_u_trap;
+            addr_of_mut!((*trapframe).proc).write(proc);
+            addr_of_mut!((*trapframe).handle_trap).write(trap::handle_u_trap);
             (*trapframe).ksatp = PageTable::make_satp(addr_of!(crate::KPAGETABLE));
-            (*trapframe).ksp = core::ptr::null_mut();
-            (*trapframe).hartid = 0;
             (*trapframe).regs[Reg::PC as usize] = file.ehdr.entry as usize;
             (*trapframe).regs[Reg::SP as usize] = sp;
             (*trapframe).regs[Reg::A0 as usize] = args.len() + 1;

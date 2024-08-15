@@ -1,9 +1,13 @@
+use core::cell::OnceCell;
+
+use alloc::sync::Arc;
 use servos::{
     riscv::{r_sstatus, r_stval, r_tp, w_sstatus, SSTATUS_SPIE, SSTATUS_SPP},
     sbi,
 };
 
 use crate::{
+    dev::console::Console,
     plic::PLIC,
     println,
     proc::{Process, ProcessNode, Reg, Scheduler, USER_TRAP_FRAME},
@@ -52,7 +56,9 @@ impl TrapCause {
 }
 
 pub const USER_TRAP_VEC: VirtAddr = VirtAddr(VirtAddr::MAX.0 - Page::SIZE);
-pub const TIMER_INTERVAL: usize = 10_000_000/2;
+pub const TIMER_INTERVAL: usize = 10_000_000 / 2;
+
+pub static mut CONSOLE_DEV: OnceCell<Arc<Console>> = OnceCell::new();
 
 #[naked]
 #[link_section = ".text.trap"]
@@ -189,7 +195,6 @@ extern "riscv-interrupt-s" fn sv_trap_vec() {
     match TrapCause::current() {
         Ok(TrapCause::ExternalIntr) => handle_external_intr(),
         Ok(TrapCause::TimerIntr) => {
-            println!("Timer!");
             _ = sbi::timer::set_timer(r_time() + TIMER_INTERVAL);
         }
         Ok(ex) => panic!("Unhandled trap: {ex:?}"),
@@ -299,7 +304,12 @@ fn handle_external_intr() {
 
     if irq.is_uart0() {
         let ch = CONS.lock().read().unwrap();
-        println!("UART interrupt: {ch:#04x} ({})", ch as char);
+        // println!("UART interrupt: {ch:#04x} ({})", ch as char);
+        unsafe {
+            if !CONSOLE_DEV.get().unwrap().put(ch) {
+                CONS.lock().put(0x07); // ASCII BEL
+            }
+        }
     } else {
         println!("PLIC interrupt with unknown irq {num:#x}");
     }
