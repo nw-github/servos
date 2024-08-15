@@ -41,12 +41,12 @@ impl core::fmt::Display for Size {
 fn printdir(dir: impl AsRef<[u8]>, name: bool, all: bool) -> bool {
     let dir = dir.as_ref();
     let Ok(fd) = sys::open(dir, OpenFlags::empty()) else {
-        println!("{}: doesn't exist", core::str::from_utf8(dir).unwrap());
+        println!("'{}': doesn't exist", core::str::from_utf8(dir).unwrap());
         return false;
     };
 
     if name {
-        println!("{}: ", core::str::from_utf8(dir).unwrap());
+        println!("'{}': ", core::str::from_utf8(dir).unwrap());
     }
 
     if let Ok(stat) = sys::stat(fd) {
@@ -61,7 +61,7 @@ fn printdir(dir: impl AsRef<[u8]>, name: bool, all: bool) -> bool {
         }
     }
 
-    while let Ok(Some(ent)) = sys::readdir(fd, usize::MAX) {
+    while let Ok(Some(ent)) = sys::readdir(fd, None) {
         let name = core::str::from_utf8(&ent.name[..ent.name_len]).unwrap();
         if name.starts_with(".") && !all {
             continue;

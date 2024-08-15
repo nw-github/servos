@@ -51,7 +51,7 @@ fn test_fd_cursor() {
 
     let mut buf = [0; 8];
     loop {
-        match sys::read(fd, u64::MAX, &mut buf) {
+        match sys::read(fd, None, &mut buf) {
             Ok(n) => println!("Read {n} bytes: {:?}", core::str::from_utf8(&buf[..n])),
             Err(SysError::Eof) => break,
             Err(err) => panic!("Cursor file read error: {err:?}"),

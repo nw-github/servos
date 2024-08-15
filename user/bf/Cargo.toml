@@ -1,0 +1,8 @@
+[package]
+name = "bf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+strum = { version = "0.26.3", features = ["derive"], default-features = false }
+userstd = { path = "../userstd" }

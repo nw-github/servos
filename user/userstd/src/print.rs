@@ -6,7 +6,7 @@ pub struct Stdout;
 
 impl Write for Stdout {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        _ = sys::write(RawFd(0), 0, s.as_bytes());
+        _ = sys::write(RawFd(0), None, s.as_bytes());
         Ok(())
     }
 }

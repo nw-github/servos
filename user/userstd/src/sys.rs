@@ -57,29 +57,36 @@ pub fn open(path: impl AsRef<[u8]>, flags: OpenFlags) -> Result<RawFd, SysError>
     .map(RawFd)
 }
 
-pub fn read(fd: RawFd, pos: u64, buf: &mut [u8]) -> Result<usize, SysError> {
+pub fn read(fd: RawFd, pos: impl Into<Option<u64>>, buf: &mut [u8]) -> Result<usize, SysError> {
     syscall(
         Sys::Read,
         fd.0,
-        pos as usize,
+        pos.into().unwrap_or(u64::MAX) as usize,
         buf.as_mut_ptr() as usize,
         buf.len(),
     )
 }
 
-pub fn write(fd: RawFd, pos: u64, buf: &[u8]) -> Result<usize, SysError> {
+pub fn write(fd: RawFd, pos: impl Into<Option<u64>>, buf: &[u8]) -> Result<usize, SysError> {
     syscall(
         Sys::Write,
         fd.0,
-        pos as usize,
+        pos.into().unwrap_or(u64::MAX) as usize,
         buf.as_ptr() as usize,
         buf.len(),
     )
 }
 
-pub fn readdir(fd: RawFd, pos: usize) -> Result<Option<DirEntry>, SysError> {
+pub fn readdir(fd: RawFd, pos: impl Into<Option<usize>>) -> Result<Option<DirEntry>, SysError> {
     let mut entry = MaybeUninit::<DirEntry>::uninit();
-    if syscall(Sys::Readdir, fd.0, pos, entry.as_mut_ptr() as usize, 0)? == 0 {
+    if syscall(
+        Sys::Readdir,
+        fd.0,
+        pos.into().unwrap_or(usize::MAX),
+        entry.as_mut_ptr() as usize,
+        0,
+    )? == 0
+    {
         Ok(None)
     } else {
         Ok(Some(unsafe { entry.assume_init() }))

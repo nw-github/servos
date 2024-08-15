@@ -15,6 +15,17 @@ class INode:
         self.size = size
         self.addr = addr
 
+    def serialize_data(self):
+        return struct.pack("<HHIQ", len(self.name), int(self.dir), self.size, self.addr)
+
+class ParentINode(INode):
+    def __init__(self, parent: INode):
+        self.parent = parent
+        INode.__init__(self, "..", True, 0, 0)
+
+    def serialize_data(self):
+        return struct.pack("<HHIQ", len(self.name), int(self.dir), self.parent.size, self.parent.addr)
+
 def adddir(inodes: list[INode], data: bytearray, path: pathlib.Path, parent: int) -> int:
     def append_inode(inode: INode):
         ino = len(inodes)
@@ -35,7 +46,7 @@ def adddir(inodes: list[INode], data: bytearray, path: pathlib.Path, parent: int
     inodes[ino].addr = len(data)
 
     children[0] = append_inode(INode(".", True, inodes[ino].size, inodes[ino].addr))
-    children[1] = append_inode(INode("..", True, inodes[parent].size, inodes[parent].addr))
+    children[1] = append_inode(ParentINode(inodes[parent]))
     for child in children:
         data.extend(struct.pack("<Q", child))
 
@@ -54,7 +65,7 @@ def main():
         file.write(struct.pack("<IIQ", MAGIC, 0, len(inodes)))
         for node in inodes:
             file.write(node.name.encode().ljust(MAX_DIR_NAME, b"\0"))
-            file.write(struct.pack("<HHIQ", len(node.name), int(node.dir), node.size, node.addr))
+            file.write(node.serialize_data())
         file.write(data)
 
 if __name__ == "__main__":

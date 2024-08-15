@@ -9,7 +9,7 @@ use userstd::{
 
 fn read_buf(buf: &mut [u8]) -> usize {
     loop {
-        match sys::read(RawFd(1), 0, buf) {
+        match sys::read(RawFd(1), None, buf) {
             Ok(n) if n != 0 => return n,
             _ => continue,
         }
