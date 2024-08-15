@@ -188,11 +188,7 @@ impl Process {
                 Some(Pte::empty()),
             )?;
 
-            for data in (base + filesz).iter_phys(&pt, (phdr.memsz - phdr.filesz) as usize, perms) {
-                unsafe {
-                    core::slice::from_mut_ptr_range(data.unwrap()).fill(0);
-                }
-            }
+            (base + filesz).iter_phys(&pt, (phdr.memsz - phdr.filesz) as usize, perms).zero();
 
             highest_va = highest_va.max(base + phdr.memsz as usize);
         }
@@ -204,6 +200,8 @@ impl Process {
         if !pt.map_new_pages(sp - STACK_SZ, STACK_SZ, Pte::Urw) {
             return Err(SysError::NoMem);
         }
+
+        (sp - STACK_SZ).iter_phys(&pt, STACK_SZ, Pte::empty()).zero();
 
         let mut ptrs = Vec::try_with_capacity(args.len() + 1)?;
         for arg in core::iter::once(path.as_ref()).chain(args.iter().cloned()) {

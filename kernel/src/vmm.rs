@@ -541,6 +541,16 @@ pub struct PhysIter<'a> {
     perms: Pte,
 }
 
+impl PhysIter<'_> {
+    pub fn zero(self) {
+        for page in self {
+            unsafe {
+                core::slice::from_mut_ptr_range(page.unwrap()).fill(0);
+            }
+        }
+    }
+}
+
 impl Iterator for PhysIter<'_> {
     type Item = Result<Range<*mut u8>, VirtToPhysErr>;
 
