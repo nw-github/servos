@@ -6,6 +6,8 @@ build-all:
     cargo b -q --bin bf
     cargo b -q --bin cat
     cargo b -q --bin shutdown
+    cargo b -q --bin echo
+    cargo b -q --bin kill
     cargo b -q --bin servos
 
     mkdir -p initrd/bin
@@ -17,6 +19,8 @@ build-all:
     rsync target/riscv64imac-unknown-none-elf/debug/bf initrd/bin/bf
     rsync target/riscv64imac-unknown-none-elf/debug/cat initrd/bin/cat
     rsync target/riscv64imac-unknown-none-elf/debug/shutdown initrd/bin/shutdown
+    rsync target/riscv64imac-unknown-none-elf/debug/echo initrd/bin/echo
+    rsync target/riscv64imac-unknown-none-elf/debug/kill initrd/bin/kill
 
 test: build-all
     python mkfs.py initrd initrd.img

@@ -13,25 +13,29 @@ impl core::fmt::Display for Size {
         const MB: usize = KB * 1024;
         const GB: usize = MB * 1024;
 
-        let [kb, mb, gb] = [self.0 / KB, self.0 / MB, self.0 / GB];
-        if kb == 0 {
+        let [kb, mb, gb] = [
+            self.0 as f64 / KB as f64,
+            self.0 as f64 / MB as f64,
+            self.0 as f64 / GB as f64,
+        ];
+        if self.0 < KB {
             write!(f, "{:>4}", self.0)?;
-        } else if mb == 0 {
-            if kb > 9 {
-                write!(f, "{kb:>4}k")?;
+        } else if self.0 < MB {
+            if self.0 > 9 * KB {
+                write!(f, "{kb:>4.0}k")?;
             } else {
-                write!(f, "{kb:>1}.{}k", (self.0 % KB) / 100)?;
+                write!(f, "{kb:>1.1}k")?;
             }
-        } else if gb == 0 {
-            if mb > 9 {
-                write!(f, "{mb:>4}M")?;
+        } else if self.0 < GB {
+            if self.0 > 9 * MB {
+                write!(f, "{mb:>4.0}M")?;
             } else {
-                write!(f, "{mb:>1}.{}M", (self.0 % MB) / 100000)?;
+                write!(f, "{mb:>1.1}M")?;
             }
-        } else if gb > 9 {
-            write!(f, "{gb:>4}G")?;
+        } else if self.0 > 9 * GB {
+            write!(f, "{gb:>4.0}G")?;
         } else {
-            write!(f, "{gb:>1}.{}G", (self.0 % GB) / 100000000)?;
+            write!(f, "{gb:>1.1}G")?;
         }
 
         Ok(())

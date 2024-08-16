@@ -4,8 +4,10 @@
 use userstd::{
     alloc::vec::Vec,
     print, println,
-    sys::{self, KString, RawFd},
+    sys::{self, KString, RawFd, SysError},
 };
+
+static PATH: &[&[u8]] = &[b"/bin", b"/sbin"];
 
 fn read_buf(buf: &mut [u8]) -> usize {
     loop {
@@ -14,6 +16,19 @@ fn read_buf(buf: &mut [u8]) -> usize {
             _ => continue,
         }
     }
+}
+
+fn try_spawn_in_path(path: &[&[u8]], cmd: &[u8], args: &[KString]) -> Option<u32> {
+    for dir in path {
+        let mut buf = dir.to_vec();
+        buf.push(b'/');
+        buf.extend(cmd);
+        if let Ok(pid) = sys::spawn(buf, args) {
+            return Some(pid);
+        }
+    }
+
+    None
 }
 
 fn parse_cmd(raw: &str, cmd: &[&[u8]]) -> usize {
@@ -39,17 +54,28 @@ fn parse_cmd(raw: &str, cmd: &[&[u8]]) -> usize {
             }
         }
 
-        match sys::spawn(cmd[0], &args) {
-            Ok(pid) if !bg => {
-                if let Ok(n) = sys::waitpid(pid) {
-                    return n;
+        let pid = match sys::spawn(cmd[0], &args) {
+            Ok(pid) => pid,
+            Err(err @ SysError::PathNotFound) if !cmd[0].contains(&b'/') => {
+                if let Some(pid) = try_spawn_in_path(PATH, cmd[0], &args) {
+                    pid
+                } else {
+                    println!("spawn error for '{raw}': {err:?}");
+                    return 0;
                 }
-            },
-            Err(err) => println!("spawn error for '{raw}': {err:?}"),
-            _ => {}
-        }
+            }
+            Err(err) => {
+                println!("spawn error for '{raw}': {err:?}");
+                return 0;
+            }
+        };
 
-        0
+        if bg {
+            println!("spawned background task with PID {pid}");
+            0
+        } else {
+            sys::waitpid(pid).unwrap_or(0)
+        }
     }
 }
 
@@ -58,10 +84,12 @@ fn main(_args: &[*const u8]) -> usize {
     let mut buf = [0; 0x1000];
     let mut last = 0;
     loop {
-        if last != 0 {
-            print!("[{last}] ");
+        match last {
+            usize::MAX => print!("[\x1b[1;31m-1\x1b[0m] "),
+            n if n != 0 => print!("[\x1b[1;31m{n}\x1b[0m] "),
+            _ => {}
         }
-        print!("$ ");
+        print!("\x1b[1;32m$ \x1b[0m");
         let n = read_buf(&mut buf);
         for cmd in buf[..n].split(|&c| c == b'\n') {
             let args: Vec<&[u8]> = cmd

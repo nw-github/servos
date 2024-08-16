@@ -45,8 +45,8 @@ fn main(args: &[*const u8]) -> usize {
     let mut _line_disassemble = false;
     let mut dump = false;
     let mut program = None;
-    for &arg in args.iter() {
-        let arg = unsafe { CStr::from_ptr(arg.cast()) }.to_bytes();
+    for &argc in args[1..].iter() {
+        let arg = unsafe { CStr::from_ptr(argc.cast()) }.to_bytes();
         if arg.starts_with(b"-") {
             if arg.contains(&b'd') {
                 dump = true;
@@ -54,11 +54,11 @@ fn main(args: &[*const u8]) -> usize {
                 _line_disassemble = true;
             }
         } else {
-            program = Some(arg);
+            program = Some((arg, argc));
         }
     }
 
-    let Some(program) = program else {
+    let Some((program, pcs)) = program else {
         // return repl();
         let name = unsafe { CStr::from_ptr(args[0].cast()) };
         println!("usage: {name:?} [-ld] <program>");
@@ -68,7 +68,7 @@ fn main(args: &[*const u8]) -> usize {
     let buf = match userstd::io::read_file(program) {
         Ok(buf) => buf,
         Err(err) => {
-            println!("error reading file: {err:?}");
+            println!("error reading file {pcs:?}: {err:?}");
             return 1;
         }
     };

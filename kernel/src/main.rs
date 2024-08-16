@@ -6,8 +6,6 @@
 #![feature(fn_align)]
 #![feature(allocator_api)]
 #![feature(new_uninit)]
-#![feature(stmt_expr_attributes)]
-#![feature(slice_split_once)]
 #![feature(try_with_capacity)]
 #![feature(pointer_is_aligned_to)]
 #![feature(slice_from_ptr_range)]

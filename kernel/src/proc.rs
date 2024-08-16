@@ -106,6 +106,10 @@ impl ProcessNode {
     /// The process must not be awaiting scheduling or running on any hart.
     pub unsafe fn destroy(self, lock: Guard<Process>, ecode: usize) {
         let mypid = lock.pid;
+        if mypid == 0 {
+            panic!("return from the init process");
+        }
+
         let _token = Guard::forget_and_keep_token(lock);
         let mut list = PROC_LIST.lock();
         if let Some(i) = list.iter().position(|&rhs| rhs == self) {

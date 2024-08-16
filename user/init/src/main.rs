@@ -15,8 +15,6 @@ fn main(_args: &[*const u8]) -> usize {
 
     println!("\n\nServos has booted sucessfully!");
     let sh = sys::spawn("/bin/sh", &[]).expect("init: couldn't spawn the shell!");
-    sys::waitpid(sh).expect("init: shell process returned!");
-
-    #[allow(clippy::empty_loop)]
-    loop {}
+    let _ = sys::waitpid(sh);
+    panic!("init: shell process returned!");
 }
