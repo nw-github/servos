@@ -12,6 +12,7 @@ use userstd::{
 #[no_mangle]
 fn main(args: &[*const u8]) -> usize {
     let mut buf = [0; 0x4000];
+    let mut ecode = 0;
     for arg in args[1..]
         .iter()
         .map(|arg| unsafe { CStr::from_ptr(arg.cast()).to_bytes() })
@@ -21,17 +22,20 @@ fn main(args: &[*const u8]) -> usize {
             Ok(fd) => fd,
             Err(SysError::PathNotFound) => {
                 println!("'{strname}': doesn't exist");
-                return 1;
+                ecode = 1;
+                continue;
             }
             Err(err) => {
                 println!("'{strname}': read error: {err:?}");
-                return 1;
+                ecode = 1;
+                continue;
             }
         };
         while let Ok(n) = sys::read(fd, None, &mut buf) {
             _ = sys::write(RawFd(0), None, &buf[..n]);
         }
+        _ = sys::close(fd);
     }
 
-    0
+    ecode
 }

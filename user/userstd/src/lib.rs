@@ -1,7 +1,7 @@
 #![no_std]
 
-pub mod mem;
 pub mod io;
+pub mod mem;
 pub mod sys;
 
 use shared::io::OpenFlags;
@@ -36,14 +36,6 @@ extern "C" fn _start(argc: usize, argv: *const *const u8) {
 
     unsafe {
         mem::init(bottom, top);
-
-        let _code = main(if argc != 0 {
-            core::slice::from_raw_parts(argv, argc)
-        } else {
-            &[]
-        });
-        // TODO: call exit
-        _ = sys::kill(sys::getpid());
-        panic!("exit returned");
+        sys::exit(main(core::slice::from_raw_parts(argv, argc))).expect("exit shouldn't return");
     }
 }

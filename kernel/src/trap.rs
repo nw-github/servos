@@ -1,13 +1,9 @@
-use core::cell::OnceCell;
-
-use alloc::sync::Arc;
 use servos::{
     riscv::{r_sstatus, r_stval, r_tp, w_sstatus, SSTATUS_SPIE, SSTATUS_SPP},
     sbi,
 };
 
 use crate::{
-    dev::console::Console,
     plic::PLIC,
     println,
     proc::{ProcStatus, Process, ProcessNode, Reg, Scheduler, USER_TRAP_FRAME},
@@ -16,7 +12,7 @@ use crate::{
     },
     sys,
     uart::CONS,
-    vmm::{self, Page, PageTable, Pte, VirtAddr},
+    vmm::{self, Page, PageTable, Pte, VirtAddr}, CONSOLE_DEV,
 };
 
 const INTERRUPT_FLAG_BIT: usize = 1 << (usize::BITS - 1);
@@ -57,8 +53,6 @@ impl TrapCause {
 
 pub const USER_TRAP_VEC: VirtAddr = VirtAddr(VirtAddr::MAX.0 - Page::SIZE);
 pub const TIMER_INTERVAL: usize = 10_000_000 / 2;
-
-pub static mut CONSOLE_DEV: OnceCell<Arc<Console>> = OnceCell::new();
 
 #[naked]
 #[link_section = ".text.trap"]
@@ -223,7 +217,7 @@ pub extern "C" fn handle_u_trap(mut sepc: usize, paddr: ProcessNode) -> ! {
             | TrapCause::InstrPageFault),
         ) => {
             let pid = proc.with(|mut proc| {
-                proc.killed = true;
+                proc.kill(None);
                 proc.pid
             });
 
@@ -235,7 +229,7 @@ pub extern "C" fn handle_u_trap(mut sepc: usize, paddr: ProcessNode) -> ! {
         }
         Ok(unk) => {
             let pid = proc.with(|mut proc| {
-                proc.killed = true;
+                proc.kill(None);
                 proc.pid
             });
             println!(
@@ -249,13 +243,13 @@ pub extern "C" fn handle_u_trap(mut sepc: usize, paddr: ProcessNode) -> ! {
     proc.with(|mut proc| {
         proc.trapframe()[Reg::PC] = sepc;
         unsafe {
-            if proc.killed {
-                paddr.destroy(proc); // proc is invalidated here
+            if let Some(ecode) = proc.killed {
+                paddr.destroy(proc, ecode); // proc is invalidated here
             } else if !must_yield && !matches!(proc.status, ProcStatus::Waiting(_)) {
-                Process::return_into(proc);
+                Process::resume(proc);
             } else if !Scheduler::take(paddr) {
                 println!("Scheduler::take failed for PID {}, OOM!", proc.pid);
-                paddr.destroy(proc);
+                paddr.destroy(proc, usize::MAX);
                 /* OOM */
             }
         }

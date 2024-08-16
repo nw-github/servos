@@ -60,9 +60,9 @@ pub trait FileSystem {
         len: usize,
     ) -> FsResult<usize> {
         rw_va(pos, pt, buf, len, Pte::U | Pte::W, |pos, buf| {
-            let buf_uninit =
+            let buf =
                 unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr().cast(), buf.len()) };
-            self.read(vn, pos, buf_uninit).map(|v| v.len())
+            self.read(vn, pos, buf).map(|v| v.len())
         })
     }
 

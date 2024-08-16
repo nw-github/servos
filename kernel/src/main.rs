@@ -18,10 +18,10 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use alloc::sync::Arc;
-use trap::CONSOLE_DEV;
 use core::{
     alloc::Allocator,
     arch::asm,
+    cell::OnceCell,
     mem::MaybeUninit,
     ops::Range,
     ptr::{addr_of, addr_of_mut},
@@ -72,6 +72,8 @@ static mut BOOT_STACK: Align16<MaybeUninit<[u8; HART_STACK_LEN]>> = Align16(Mayb
 static ALLOCATOR: SpinLocked<BlockAlloc> = SpinLocked::new(BlockAlloc::new());
 
 static mut KPAGETABLE: PageTable = PageTable::new();
+
+static mut CONSOLE_DEV: OnceCell<Arc<Console>> = OnceCell::new();
 
 static BOOT_HART: AtomicUsize = AtomicUsize::new(0);
 

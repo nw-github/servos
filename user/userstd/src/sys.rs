@@ -158,6 +158,10 @@ pub fn spawn(path: impl AsRef<[u8]>, args: &[KString]) -> Result<u32, SysError> 
     .map(|pid| pid as u32)
 }
 
-pub fn waitpid(pid: u32) -> Result<(), SysError> {
-    syscall(Sys::Waitpid, pid as usize, 0, 0, 0).map(|_| ())
+pub fn waitpid(pid: u32) -> Result<usize, SysError> {
+    syscall(Sys::Waitpid, pid as usize, 0, 0, 0)
+}
+
+pub fn exit(ecode: usize) -> Result<Infallible, SysError> {
+    Err(syscall(Sys::Exit, ecode, 0, 0, 0).unwrap_err())
 }

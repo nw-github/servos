@@ -118,16 +118,6 @@ impl PageTableEntry {
     pub const fn perms(self) -> Pte {
         Pte::from_bits_retain(self.0 & 0x3ff)
     }
-
-    unsafe fn free(self) {
-        match self.next() {
-            PteLink::PageTable(pt) => drop(unsafe { Box::from_raw(pt) }),
-            PteLink::Leaf(page) if self.is_owned() => {
-                drop(unsafe { Box::from_raw(page as *mut Page) });
-            }
-            _ => {}
-        }
-    }
 }
 
 #[repr(C, align(0x1000))] // Page::SIZE
@@ -233,10 +223,10 @@ impl PageTable {
             let entry = &mut pt.0[va.vpn(level)];
             match entry.next() {
                 PteLink::PageTable(next) => pt = unsafe { &mut *next },
-                PteLink::Leaf(_) => {
+                PteLink::Leaf(page) => {
                     assert!(level == 0, "Page table level {level} is a leaf node");
-                    unsafe {
-                        entry.free();
+                    if entry.is_owned() {
+                        drop(unsafe { Box::from_raw(page as *mut Page) });
                     }
                     *entry = PageTableEntry(0);
                     return true;
@@ -284,8 +274,12 @@ impl PageTable {
 impl Drop for PageTable {
     fn drop(&mut self) {
         for &entry in self.0.iter() {
-            unsafe {
-                entry.free();
+            match entry.next() {
+                PteLink::PageTable(pt) => drop(unsafe { Box::from_raw(pt) }),
+                PteLink::Leaf(page) if entry.is_owned() => {
+                    drop(unsafe { Box::from_raw(page as *mut Page) });
+                }
+                _ => {}
             }
         }
     }

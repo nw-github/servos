@@ -53,7 +53,7 @@ fn sys_kill(_: &Proc, pid: usize) -> SysResult {
             proc.with(|mut proc| {
                 // TODO: permission check
                 if proc.pid as usize == pid {
-                    proc.killed = true;
+                    proc.kill(None);
                     true
                 } else {
                     false
@@ -79,7 +79,7 @@ fn sys_open(proc: &Proc, path: VirtAddr, len: usize, flags: u32) -> SysResult {
 
     let mut buf = Vec::try_with_capacity(len)?;
     proc.with(|mut proc| {
-        path.copy_from(&proc.pagetable, buf.spare_capacity_mut())?;
+        path.copy_from(proc.pagetable(), buf.spare_capacity_mut())?;
         unsafe {
             buf.set_len(len);
         }
@@ -110,7 +110,7 @@ fn sys_read(proc: &Proc, fd: usize, pos: usize, buf: VirtAddr, buflen: usize) ->
             return Err(SysError::BadFd);
         };
 
-        Ok(fd.read_va(pos as u64, &proc.pagetable, buf, buflen)?)
+        Ok(fd.read_va(pos as u64, proc.pagetable(), buf, buflen)?)
     })
 }
 
@@ -121,7 +121,7 @@ fn sys_write(proc: &Proc, fd: usize, pos: usize, buf: VirtAddr, buflen: usize) -
             return Err(SysError::BadFd);
         };
 
-        Ok(fd.write_va(pos as u64, &proc.pagetable, buf, buflen)?)
+        Ok(fd.write_va(pos as u64, proc.pagetable(), buf, buflen)?)
     })
 }
 
@@ -136,7 +136,7 @@ fn sys_readdir(proc: &Proc, fd: usize, pos: usize, entry: VirtAddr) -> SysResult
             return Ok(0);
         };
 
-        entry.copy_type_to(&proc.pagetable, &ent, None)?;
+        entry.copy_type_to(proc.pagetable(), &ent, None)?;
         Ok(1)
     })
 }
@@ -147,7 +147,7 @@ fn sys_stat(proc: &Proc, fd: usize, stat: VirtAddr) -> SysResult {
         let Some(fd) = proc.files.get(fd).and_then(|f| f.as_ref()) else {
             return Err(SysError::BadFd);
         };
-        stat.copy_type_to(&proc.pagetable, &fd.stat()?, None)?;
+        stat.copy_type_to(proc.pagetable(), &fd.stat()?, None)?;
         Ok(1)
     })
 }
@@ -156,7 +156,7 @@ fn sys_stat(proc: &Proc, fd: usize, stat: VirtAddr) -> SysResult {
 fn sys_chdir(proc: &Proc, path: VirtAddr, len: usize) -> SysResult {
     let mut buf = Vec::try_with_capacity(len)?;
     proc.with(|mut proc| {
-        path.copy_from(&proc.pagetable, buf.spare_capacity_mut())?;
+        path.copy_from(proc.pagetable(), buf.spare_capacity_mut())?;
         unsafe {
             buf.set_len(len);
         }
@@ -183,17 +183,17 @@ fn sys_spawn(
     let mut args = Vec::new();
     let mut arg_slices = Vec::try_with_capacity(nargs)?;
     let cwd = proc.with(|proc| {
-        path.copy_from(&proc.pagetable, buf.spare_capacity_mut())?;
+        path.copy_from(proc.pagetable(), buf.spare_capacity_mut())?;
         unsafe {
             buf.set_len(pathlen);
         }
 
         for i in 0..nargs {
-            let ptr: VirtAddr = (argv + (i * 2) * 8).copy_type_from(&proc.pagetable)?;
-            let len: usize = (argv + (i * 2 + 1) * 8).copy_type_from(&proc.pagetable)?;
+            let ptr: VirtAddr = (argv + (i * 2) * 8).copy_type_from(proc.pagetable())?;
+            let len: usize = (argv + (i * 2 + 1) * 8).copy_type_from(proc.pagetable())?;
             args.try_reserve(len)?;
 
-            ptr.copy_from(&proc.pagetable, &mut args.spare_capacity_mut()[..len])?;
+            ptr.copy_from(proc.pagetable(), &mut args.spare_capacity_mut()[..len])?;
             unsafe {
                 args.set_len(args.len() + len);
             }
@@ -202,7 +202,7 @@ fn sys_spawn(
         let mut buf = &args[..];
         for i in 0..nargs {
             let (arg, rest) =
-                buf.split_at((argv + (i * 2 + 1) * 8).copy_type_from(&proc.pagetable)?);
+                buf.split_at((argv + (i * 2 + 1) * 8).copy_type_from(proc.pagetable())?);
             arg_slices.push(arg);
             buf = rest;
         }
@@ -213,7 +213,7 @@ fn sys_spawn(
     Process::spawn(Path::new(&buf), cwd, &arg_slices).map(|pid| pid as usize)
 }
 
-// void waitpid(u32 pid);
+// usize waitpid(u32 pid);
 fn sys_waitpid(proc: &Proc, pid: usize) -> SysResult {
     if proc.lock().pid as usize == pid {
         return Err(SysError::InvalidArgument);
@@ -229,7 +229,7 @@ fn sys_waitpid(proc: &Proc, pid: usize) -> SysResult {
     Ok(0)
 }
 
-// void *sbrk(isize inc);
+// void *sbrk(sint inc);
 fn sys_sbrk(proc: &Proc, inc: isize) -> SysResult {
     let mut proc = proc.lock();
     let cur_brk = proc.brk;
@@ -237,19 +237,29 @@ fn sys_sbrk(proc: &Proc, inc: isize) -> SysResult {
         return Err(SysError::InvalidArgument);
     };
 
+    assert!(cur_brk == cur_brk.page());
     if new_brk.page() != cur_brk {
         new_brk = new_brk.next_page();
         if inc < 0 {
-            proc.pagetable.unmap_pages(new_brk, cur_brk.0 - new_brk.0);
-        } else if !proc
-            .pagetable
-            .map_new_pages(cur_brk, new_brk.0 - cur_brk.0, Pte::Urw, true)
-        {
+            proc.pagetable_mut()
+                .unmap_pages(new_brk, cur_brk.0 - new_brk.0);
+        } else if !proc.pagetable_mut().map_new_pages(
+            cur_brk,
+            new_brk.0 - cur_brk.0,
+            Pte::Urw,
+            true,
+        ) {
             return Err(SysError::NoMem);
         }
         proc.brk = new_brk;
     }
     Ok(proc.brk.0)
+}
+
+// void exit(usize ec);
+fn sys_exit(proc: &Proc, ecode: usize) -> SysResult {
+    proc.lock().kill(Some(ecode));
+    Ok(0)
 }
 
 pub fn handle_syscall(proc: &Proc) {
@@ -278,6 +288,7 @@ pub fn handle_syscall(proc: &Proc) {
         Some(Sys::Stat) => sys_stat(proc, a0, VirtAddr(a1)),
         Some(Sys::Sbrk) => sys_sbrk(proc, a0 as isize),
         Some(Sys::Waitpid) => sys_waitpid(proc, a0),
+        Some(Sys::Exit) => sys_exit(proc, a0),
         None => Err(SysError::InvalidSyscall),
     };
 

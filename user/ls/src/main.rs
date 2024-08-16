@@ -99,6 +99,7 @@ fn main(args: &[*const u8]) -> usize {
     }
 
     let mut printed = false;
+    let mut ecode = 0;
     for path in args.clone() {
         if path.starts_with(b"-") {
             continue;
@@ -107,9 +108,11 @@ fn main(args: &[*const u8]) -> usize {
         if printed {
             println!();
         }
-        printdir(path, printed, all);
+        if !printdir(path, printed, all) {
+            ecode = 1;
+        }
         printed = true;
     }
 
-    0
+    ecode
 }

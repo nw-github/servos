@@ -1,4 +1,4 @@
-test:
+build-all:
     cargo b -q --bin init
     cargo b -q --bin ls
     cargo b -q --bin sh
@@ -6,6 +6,7 @@ test:
     cargo b -q --bin bf
     cargo b -q --bin cat
     cargo b -q --bin shutdown
+    cargo b -q --bin servos
 
     mkdir -p initrd/bin
 
@@ -17,6 +18,7 @@ test:
     rsync target/riscv64imac-unknown-none-elf/debug/cat initrd/bin/cat
     rsync target/riscv64imac-unknown-none-elf/debug/shutdown initrd/bin/shutdown
 
+test: build-all
     python mkfs.py initrd initrd.img
     cargo r --bin servos
 

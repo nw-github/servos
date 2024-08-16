@@ -104,7 +104,7 @@ impl ProcessNode {
 
     /// # Safety
     /// The process must not be awaiting scheduling or running on any hart.
-    pub unsafe fn destroy(self, lock: Guard<Process>) {
+    pub unsafe fn destroy(self, lock: Guard<Process>, ecode: usize) {
         let mypid = lock.pid;
         let _token = Guard::forget_and_keep_token(lock);
         let mut list = PROC_LIST.lock();
@@ -117,6 +117,8 @@ impl ProcessNode {
                 proc.with(|mut proc| {
                     if proc.status == ProcStatus::Waiting(mypid) {
                         proc.status = ProcStatus::Idle;
+                        proc.trapframe()[Reg::A0] = ecode;
+                        proc.trapframe()[Reg::A1] = 0;
                     }
                 })
             }
@@ -125,20 +127,19 @@ impl ProcessNode {
     }
 
     unsafe fn free(self) {
-        let me = unsafe { Box::from_raw(self.0.as_ptr()) };
-        drop(me);
+        drop(unsafe { Box::from_raw(self.0.as_ptr()) });
     }
 }
 
 pub struct Process {
     pub pid: u32,
-    pub pagetable: Box<PageTable>,
-    trapframe: *mut TrapFrame,
     pub status: ProcStatus,
-    pub killed: bool,
     pub files: HoleArray<Fd, 32>,
     pub cwd: Fd,
     pub brk: VirtAddr,
+    pub killed: Option<usize>,
+    pagetable: *mut PageTable,
+    trapframe: *mut TrapFrame,
 }
 
 pub const USER_TRAP_FRAME: VirtAddr = VirtAddr(USER_TRAP_VEC.0 - Page::SIZE);
@@ -188,7 +189,9 @@ impl Process {
                 Some(Pte::empty()),
             )?;
 
-            (base + filesz).iter_phys(&pt, (phdr.memsz - phdr.filesz) as usize, perms).zero();
+            (base + filesz)
+                .iter_phys(&pt, (phdr.memsz - phdr.filesz) as usize, perms)
+                .zero();
 
             highest_va = highest_va.max(base + phdr.memsz as usize);
         }
@@ -220,10 +223,10 @@ impl Process {
             let proc = ProcessNode(NonNull::new_unchecked(Box::into_raw(Box::try_new(
                 SpinLocked::new(Process {
                     pid,
-                    pagetable: pt,
+                    pagetable: Box::into_raw(pt),
                     trapframe,
                     status: ProcStatus::Idle,
-                    killed: false,
+                    killed: None,
                     files: HoleArray::empty(),
                     cwd,
                     brk: highest_va.next_page(),
@@ -244,11 +247,11 @@ impl Process {
         success.then_some(pid).ok_or(SysError::NoMem)
     }
 
-    pub unsafe fn return_into(mut this: Guard<Process>) -> ! {
+    pub unsafe fn resume(mut this: Guard<Process>) -> ! {
         this.status = ProcStatus::Running;
-        let satp = PageTable::make_satp(&*this.pagetable);
         this.trapframe().hartid = r_tp();
         this.trapframe().ksp = get_hart_info().sp.0 as *mut u8;
+        let satp = PageTable::make_satp(this.pagetable());
         trap::return_to_user(Guard::drop_and_keep_token(this), satp)
     }
 
@@ -256,6 +259,20 @@ impl Process {
         // Safety: Process owns the trapframe, but because it can be modified from user_trap_vec
         // it can't be stored as an owned Box
         unsafe { &mut *self.trapframe }
+    }
+
+    pub fn pagetable(&self) -> &PageTable {
+        // Safety: Process owns the trapframe, but because page table entries can be modified by the
+        // cpu it can't be stored as an owned Box
+        unsafe { &*self.pagetable }
+    }
+
+    pub fn pagetable_mut(&mut self) -> &mut PageTable {
+        unsafe { &mut *self.pagetable }
+    }
+
+    pub fn kill(&mut self, code: Option<usize>) {
+        self.killed = Some(code.unwrap_or(usize::MAX));
     }
 
     fn enqueue_process(proc: ProcessNode) -> bool {
@@ -275,7 +292,8 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        drop(unsafe { Box::from_raw(self.trapframe as *mut Page) })
+        drop(unsafe { Box::from_raw(self.trapframe as *mut Page) });
+        drop(unsafe { Box::from_raw(self.pagetable) });
     }
 }
 
@@ -303,7 +321,7 @@ impl Scheduler {
                 next.with(|proc| {
                     if !matches!(proc.status, ProcStatus::Waiting(_)) {
                         drop(sched);
-                        Process::return_into(proc);
+                        Process::resume(proc);
                     } else {
                         sched.awaiting.push_back(next);
                     }
