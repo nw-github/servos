@@ -131,7 +131,6 @@ extern "C" fn __return_to_user(satp: usize) -> ! {
             r"
             li   t0, {trap_frame}
             csrw sscratch, t0
-            csrr t1, sstatus
 
             sfence.vma zero, zero
             csrw satp, a0

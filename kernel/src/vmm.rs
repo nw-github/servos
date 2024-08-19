@@ -207,12 +207,9 @@ impl PageTable {
         self.map_pages(start, VirtAddr(start.0), size, perms)
     }
 
-    pub fn unmap_pages(&mut self, va: VirtAddr, size: usize) {
-        assert!(size != 0);
-
-        let [first, last] = [page_number(va.0), page_number(va.0.wrapping_add(size) - 1)];
-        assert!(first < VirtAddr::MAX.0 && last < VirtAddr::MAX.0 && first <= last);
-        for page in (first..=last).step_by(Page::SIZE) {
+    pub fn unmap_pages(&mut self, va: VirtAddr, va_end: VirtAddr) {
+        assert!(va < VirtAddr::MAX && va_end < VirtAddr::MAX && va <= va_end);
+        for page in (va.page().0..=va_end.page().0).step_by(Page::SIZE) {
             self.unmap_page(VirtAddr(page));
         }
     }

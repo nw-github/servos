@@ -67,5 +67,28 @@ fn main(_args: &[*const u8]) -> usize {
     test_file_read();
     test_fd_cursor();
 
+    println!("testing sbrk: ");
+    let brk = sys::sbrk(0).unwrap() as usize;
+    {
+        assert_eq!(sys::sbrk(10).unwrap() as usize - brk, 10);
+        unsafe {
+            ((brk + 5) as *mut u8).write(1);
+        }
+        assert_eq!(sys::sbrk(-10).unwrap() as usize - brk, 0);
+    }
+
+    {
+        assert_eq!(sys::sbrk(0x1000).unwrap() as usize - brk, 0x1000);
+        unsafe {
+            ((brk + (0x1000 - 1)) as *mut u8).write(1);
+        }
+        assert_eq!(sys::sbrk(-0x1000).unwrap() as usize - brk, 0);
+    }
+
+    println!("testing sbrk actually unmapped (should crash): ");
+    unsafe {
+        ((brk + (0x1000 - 1)) as *mut u8).write(1);
+    }
+
     0
 }

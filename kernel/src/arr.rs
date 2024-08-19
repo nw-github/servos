@@ -21,6 +21,14 @@ impl<const N: usize, T> HoleArray<T, N> {
         };
         Ok((i, elem.insert(item)))
     }
+
+    pub fn remove(&mut self, i: usize) -> Option<T> {
+        self.0.get_mut(i).and_then(|v| v.take())
+    }
+
+    pub fn get(&self, i: usize) -> Option<&T> {
+        self.0.get(i).and_then(|v| v.as_ref())
+    }
 }
 
 impl<const N: usize, T> Deref for HoleArray<T, N> {

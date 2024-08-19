@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use servos::lock::SpinLocked;
 use shared::{
     io::OpenFlags,
-    sys::{Sys, SysError},
+    sys::{Sys, SysError as E},
 };
 
 use crate::{
@@ -12,23 +12,23 @@ use crate::{
     vmm::{Pte, VirtAddr},
 };
 
-impl From<FsError> for SysError {
+impl From<FsError> for E {
     fn from(value: FsError) -> Self {
         match value {
-            FsError::PathNotFound => SysError::PathNotFound,
-            FsError::NoMem => SysError::NoMem,
-            FsError::ReadOnly => SysError::ReadOnly,
-            FsError::InvalidOp => SysError::InvalidOp,
-            FsError::Unsupported => SysError::Unsupported,
-            FsError::CorruptedFs => SysError::CorruptedFs,
-            FsError::InvalidPerms => SysError::InvalidPerms,
-            FsError::BadVa => SysError::BadAddr,
-            FsError::Eof => SysError::Eof,
+            FsError::PathNotFound => E::PathNotFound,
+            FsError::NoMem => E::NoMem,
+            FsError::ReadOnly => E::ReadOnly,
+            FsError::InvalidOp => E::InvalidOp,
+            FsError::Unsupported => E::Unsupported,
+            FsError::CorruptedFs => E::CorruptedFs,
+            FsError::InvalidPerms => E::InvalidPerms,
+            FsError::BadVa => E::BadAddr,
+            FsError::Eof => E::Eof,
         }
     }
 }
 
-pub type SysResult = Result<usize, SysError>;
+pub type SysResult = Result<usize, E>;
 
 type Proc = SpinLocked<Process>;
 
@@ -38,14 +38,14 @@ fn sys_shutdown(_: &Proc, typ: usize) -> SysResult {
     match typ {
         0 => POWER.lock().shutdown(),
         1 => POWER.lock().restart(),
-        _ => Err(SysError::InvalidArgument),
+        _ => Err(E::BadArg),
     }
 }
 
 // void kill(u32 pid);
 fn sys_kill(_: &Proc, pid: usize) -> SysResult {
     if pid == 0 {
-        return Err(SysError::InvalidArgument);
+        return Err(E::BadArg);
     }
 
     for proc in PROC_LIST.lock().iter() {
@@ -65,7 +65,7 @@ fn sys_kill(_: &Proc, pid: usize) -> SysResult {
         }
     }
 
-    Err(SysError::NotFound)
+    Err(E::NotFound)
 }
 
 // u32 getpid(void);
@@ -85,54 +85,43 @@ fn sys_open(proc: &Proc, path: VirtAddr, len: usize, flags: u32) -> SysResult {
         }
 
         let file = Vfs::open_in_cwd(&proc.cwd, &buf[..], OpenFlags::from_bits_truncate(flags))?;
-        proc.files
-            .push(file)
-            .map(|v| v.0)
-            .map_err(|_| SysError::NoMem)
+        proc.files.push(file).map(|v| v.0).map_err(|_| E::NoMem)
     })
 }
 
 // void close(uint fd);
 fn sys_close(proc: &Proc, fd: usize) -> SysResult {
-    proc.with(|mut proc| {
-        if fd >= proc.files.0.len() || proc.files.0[fd].take().is_none() {
-            return Err(SysError::BadFd);
-        }
-
-        Ok(0)
-    })
+    proc.with(|mut proc| proc.files.remove(fd).ok_or(E::BadFd).map(|_| 0))
 }
 
 // uint read(uint fd, u64 pos, char *buf, uint buflen);
 fn sys_read(proc: &Proc, fd: usize, pos: usize, buf: VirtAddr, buflen: usize) -> SysResult {
     proc.with(|proc| {
-        let Some(fd) = proc.files.get(fd).and_then(|f| f.as_ref()) else {
-            return Err(SysError::BadFd);
-        };
-
-        Ok(fd.read_va(pos as u64, proc.pagetable(), buf, buflen)?)
+        Ok(proc.files.get(fd).ok_or(E::BadFd)?.read_va(
+            pos as u64,
+            proc.pagetable(),
+            buf,
+            buflen,
+        )?)
     })
 }
 
 // uint write(uint fd, u64 pos, const char *buf, uint buflen);
 fn sys_write(proc: &Proc, fd: usize, pos: usize, buf: VirtAddr, buflen: usize) -> SysResult {
     proc.with(|proc| {
-        let Some(fd) = proc.files.get(fd).and_then(|f| f.as_ref()) else {
-            return Err(SysError::BadFd);
-        };
-
-        Ok(fd.write_va(pos as u64, proc.pagetable(), buf, buflen)?)
+        Ok(proc.files.get(fd).ok_or(E::BadFd)?.write_va(
+            pos as u64,
+            proc.pagetable(),
+            buf,
+            buflen,
+        )?)
     })
 }
 
 // bool readdir(uint fd, uint pos, DirEntry *entry);
 fn sys_readdir(proc: &Proc, fd: usize, pos: usize, entry: VirtAddr) -> SysResult {
     proc.with(|proc| {
-        let Some(fd) = proc.files.get(fd).and_then(|f| f.as_ref()) else {
-            return Err(SysError::BadFd);
-        };
-
-        let Some(ent) = fd.readdir(pos)? else {
+        let Some(ent) = proc.files.get(fd).ok_or(E::BadFd)?.readdir(pos)? else {
             return Ok(0);
         };
 
@@ -141,14 +130,15 @@ fn sys_readdir(proc: &Proc, fd: usize, pos: usize, entry: VirtAddr) -> SysResult
     })
 }
 
-// bool stat(uint fd, Stat *entry);
+// void stat(uint fd, struct Stat *entry);
 fn sys_stat(proc: &Proc, fd: usize, stat: VirtAddr) -> SysResult {
     proc.with(|proc| {
-        let Some(fd) = proc.files.get(fd).and_then(|f| f.as_ref()) else {
-            return Err(SysError::BadFd);
-        };
-        stat.copy_type_to(proc.pagetable(), &fd.stat()?, None)?;
-        Ok(1)
+        stat.copy_type_to(
+            proc.pagetable(),
+            &proc.files.get(fd).ok_or(E::BadFd)?.stat()?,
+            None,
+        )?;
+        Ok(0)
     })
 }
 
@@ -163,7 +153,7 @@ fn sys_chdir(proc: &Proc, path: VirtAddr, len: usize) -> SysResult {
 
         let cwd = Vfs::open_in_cwd(&proc.cwd, &buf[..], OpenFlags::empty())?;
         if !cwd.vnode().directory {
-            return Err(SysError::InvalidArgument);
+            return Err(E::BadArg);
         }
 
         proc.cwd = cwd;
@@ -188,9 +178,10 @@ fn sys_spawn(
             buf.set_len(pathlen);
         }
 
+        const PSZ: usize = core::mem::size_of::<usize>();
         for i in 0..nargs {
-            let ptr: VirtAddr = (argv + (i * 2) * 8).copy_type_from(proc.pagetable())?;
-            let len: usize = (argv + (i * 2 + 1) * 8).copy_type_from(proc.pagetable())?;
+            let ptr: VirtAddr = (argv + (i * 2) * PSZ).copy_type_from(proc.pagetable())?;
+            let len: usize = (argv + (i * 2 + 1) * PSZ).copy_type_from(proc.pagetable())?;
             args.try_reserve(len)?;
 
             ptr.copy_from(proc.pagetable(), &mut args.spare_capacity_mut()[..len])?;
@@ -201,13 +192,14 @@ fn sys_spawn(
 
         let mut buf = &args[..];
         for i in 0..nargs {
+            // this copy_type_from can't fail
             let (arg, rest) =
-                buf.split_at((argv + (i * 2 + 1) * 8).copy_type_from(proc.pagetable())?);
+                buf.split_at((argv + (i * 2 + 1) * PSZ).copy_type_from(proc.pagetable())?);
             arg_slices.push(arg);
             buf = rest;
         }
 
-        Ok::<_, SysError>(proc.cwd.clone())
+        Ok::<_, E>(proc.cwd.clone())
     })?;
 
     Process::spawn(Path::new(&buf), cwd, &arg_slices).map(|pid| pid as usize)
@@ -216,7 +208,7 @@ fn sys_spawn(
 // usize waitpid(u32 pid);
 fn sys_waitpid(proc: &Proc, pid: usize) -> SysResult {
     if proc.lock().pid as usize == pid {
-        return Err(SysError::InvalidArgument);
+        return Err(E::BadArg);
     }
 
     for &rhs in PROC_LIST.lock().iter() {
@@ -233,26 +225,25 @@ fn sys_waitpid(proc: &Proc, pid: usize) -> SysResult {
 fn sys_sbrk(proc: &Proc, inc: isize) -> SysResult {
     let mut proc = proc.lock();
     let cur_brk = proc.brk;
-    let Some(mut new_brk) = cur_brk.0.checked_add_signed(inc).map(VirtAddr) else {
-        return Err(SysError::InvalidArgument);
+    let Some(new_brk) = cur_brk.0.checked_add_signed(inc).map(VirtAddr) else {
+        return Err(E::BadArg);
     };
 
-    assert!(cur_brk == cur_brk.page());
-    if new_brk.page() != cur_brk {
-        new_brk = new_brk.next_page();
+    if !(new_brk.page() == cur_brk.page() || (inc == 1 && new_brk.page() != cur_brk.page())) {
+        let pt = proc.pagetable_mut();
         if inc < 0 {
-            proc.pagetable_mut()
-                .unmap_pages(new_brk, cur_brk.0 - new_brk.0);
-        } else if !proc.pagetable_mut().map_new_pages(
-            cur_brk,
-            new_brk.0 - cur_brk.0,
+            pt.unmap_pages(new_brk.next_page(), cur_brk);
+        } else if !pt.map_new_pages(
+            cur_brk.next_page(),
+            new_brk.0 - cur_brk.next_page().0,
             Pte::Urw,
             true,
         ) {
-            return Err(SysError::NoMem);
+            return Err(E::NoMem);
         }
-        proc.brk = new_brk;
     }
+
+    proc.brk = new_brk;
     Ok(proc.brk.0)
 }
 
@@ -289,7 +280,7 @@ pub fn handle_syscall(proc: &Proc) {
         Some(Sys::Sbrk) => sys_sbrk(proc, a0 as isize),
         Some(Sys::Waitpid) => sys_waitpid(proc, a0),
         Some(Sys::Exit) => sys_exit(proc, a0),
-        None => Err(SysError::InvalidSyscall),
+        None => Err(E::BadSyscall),
     };
 
     let (a0, a1) = match result {

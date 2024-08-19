@@ -154,7 +154,7 @@ impl Process {
         let stat = file.stat()?;
         let mut buf = Vec::try_with_capacity(stat.size)?;
         let Some(file) = ElfFile::new(file.read(0, buf.spare_capacity_mut())?) else {
-            return Err(SysError::InvalidArgument);
+            return Err(SysError::BadArg);
         };
 
         let mut pt = PageTable::try_alloc()?;
@@ -171,7 +171,7 @@ impl Process {
             if phdr.typ != PT_LOAD {
                 continue;
             } else if phdr.memsz < phdr.filesz {
-                return Err(SysError::InvalidArgument);
+                return Err(SysError::BadArg);
             }
 
             let mut perms = Pte::U | Pte::R;
@@ -233,7 +233,7 @@ impl Process {
                     killed: None,
                     files: HoleArray::empty(),
                     cwd,
-                    brk: highest_va.next_page(),
+                    brk: highest_va,
                 }),
             )?)));
 

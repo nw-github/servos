@@ -407,7 +407,7 @@ extern "C" fn kinithart(hartid: usize) -> ! {
                 .unwrap();
         }
         devices
-            .add_device(Path::new("null").try_into().unwrap(), Arc::new(NullDevice))
+            .add_device(Path::new("zero").try_into().unwrap(), Arc::new(NullDevice))
             .unwrap();
 
         static INITRD: &[u8] = include_bytes!("../../initrd.img");

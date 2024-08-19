@@ -22,8 +22,8 @@ pub enum Sys {
 #[derive(strum::FromRepr, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
 pub enum SysError {
-    InvalidSyscall = 1,
-    InvalidArgument,
+    BadSyscall = 1,
+    BadArg,
     NotFound,
     BadFd,
     NoMem,
