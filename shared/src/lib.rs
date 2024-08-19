@@ -4,5 +4,5 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-pub mod sys;
 pub mod io;
+pub mod sys;

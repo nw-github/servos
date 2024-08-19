@@ -12,7 +12,8 @@ use crate::{
     },
     sys,
     uart::CONS,
-    vmm::{self, Page, PageTable, Pte, VirtAddr}, CONSOLE_DEV,
+    vmm::{self, Page, PageTable, Pte, VirtAddr},
+    CONSOLE_DEV,
 };
 
 const INTERRUPT_FLAG_BIT: usize = 1 << (usize::BITS - 1);

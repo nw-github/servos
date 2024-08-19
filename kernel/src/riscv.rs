@@ -17,7 +17,7 @@ macro_rules! read_register {
                 let val: usize;
                 unsafe {
                     asm!(
-                        concat!("csrr {val}, ", stringify!($name)), 
+                        concat!("csrr {val}, ", stringify!($name)),
                         val = out(reg) val,
                         options(nostack),
                     )

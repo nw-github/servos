@@ -8,7 +8,7 @@ use servos::{
     },
 };
 
-use crate::vmm::{VirtAddr, Page};
+use crate::vmm::{Page, VirtAddr};
 
 pub const MAX_HARTS: usize = 256;
 pub const HART_STACK_LEN: usize = Page::SIZE * 4;
