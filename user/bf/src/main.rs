@@ -45,8 +45,9 @@ fn main(args: &[*const u8]) -> usize {
     let mut _line_disassemble = false;
     let mut dump = false;
     let mut program = None;
-    for &argc in args[1..].iter() {
-        let arg = unsafe { CStr::from_ptr(argc.cast()) }.to_bytes();
+    for &arg in args[1..].iter() {
+        let argc = unsafe { CStr::from_ptr(arg.cast()) };
+        let arg = argc.to_bytes();
         if arg.starts_with(b"-") {
             if arg.contains(&b'd') {
                 dump = true;

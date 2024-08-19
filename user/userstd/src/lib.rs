@@ -32,7 +32,7 @@ extern "C" fn _start(argc: usize, argv: *const *const u8) {
     _ = sys::open("/dev/uart0", OpenFlags::empty()).unwrap();
 
     let bottom = sys::sbrk(0).unwrap();
-    let top = sys::sbrk(1024 * 1024).expect("sbrk failed"); // ask for 1mib of heap
+    let top = sys::sbrk(1024 * 512).expect("sbrk failed");
 
     unsafe {
         mem::init(bottom, top);

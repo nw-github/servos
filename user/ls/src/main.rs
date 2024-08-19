@@ -56,7 +56,7 @@ fn printdir(dir: impl AsRef<[u8]>, name: bool, all: bool) -> bool {
     if let Ok(stat) = sys::stat(fd) {
         if !stat.directory {
             println!(
-                ".r{}x {}  {}",
+                ".r{}x@ {}  {}",
                 if stat.readonly { "-" } else { "w" },
                 Size(stat.size),
                 core::str::from_utf8(dir).unwrap()
@@ -72,10 +72,10 @@ fn printdir(dir: impl AsRef<[u8]>, name: bool, all: bool) -> bool {
         }
 
         if ent.stat.directory {
-            println!("dr-- {:>4}  {name}", "-");
+            println!("dr--@ {:>4}  {name}", "-");
         } else {
             println!(
-                ".r{}x {}  {name}",
+                ".r{}x@ {}  {name}",
                 if ent.stat.readonly { "-" } else { "w" },
                 Size(ent.stat.size)
             );
