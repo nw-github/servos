@@ -260,13 +260,12 @@ impl Process {
     }
 
     pub fn trapframe(&mut self) -> &mut TrapFrame {
-        // Safety: Process owns the trapframe, but because it can be modified from user_trap_vec
-        // it can't be stored as an owned Box
+        // Safety: the pagetable owns the trapframe page
         unsafe { &mut *self.trapframe }
     }
 
     pub fn pagetable(&self) -> &PageTable {
-        // Safety: Process owns the trapframe, but because page table entries can be modified by the
+        // Safety: Process owns the pagetable, but because page table entries can be modified by the
         // cpu it can't be stored as an owned Box
         unsafe { &*self.pagetable }
     }
@@ -296,7 +295,6 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        drop(unsafe { Box::from_raw(self.trapframe as *mut Page) });
         drop(unsafe { Box::from_raw(self.pagetable) });
     }
 }
