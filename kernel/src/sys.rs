@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use servos::lock::SpinLocked;
 use shared::{
-    io::OpenFlags,
+    io::{DirEntry, OpenFlags, Stat},
     sys::{Sys, SysError as E},
 };
 
@@ -9,7 +9,7 @@ use crate::{
     fs::{path::Path, vfs::Vfs, FsError},
     hart::POWER,
     proc::{ProcStatus, Process, Reg, PROC_LIST},
-    vmm::{Pte, VirtAddr},
+    vmm::{Pte, User, VirtAddr},
 };
 
 impl From<FsError> for E {
@@ -73,10 +73,8 @@ fn sys_getpid(proc: &Proc) -> SysResult {
     Ok(proc.lock().pid as usize)
 }
 
-// uint open(const char *path, uint pathlen, u32 flags);
+// uint open(const u8 *path, uint pathlen, u32 flags);
 fn sys_open(proc: &Proc, path: VirtAddr, len: usize, flags: u32) -> SysResult {
-    // TODO: don't hold the proc lock while doing fs operations
-
     let mut buf = Vec::try_with_capacity(len)?;
     proc.with(|mut proc| {
         path.copy_from(proc.pagetable(), buf.spare_capacity_mut())?;
@@ -94,7 +92,7 @@ fn sys_close(proc: &Proc, fd: usize) -> SysResult {
     proc.with(|mut proc| proc.files.remove(fd).ok_or(E::BadFd).map(|_| 0))
 }
 
-// uint read(uint fd, u64 pos, char *buf, uint buflen);
+// uint read(uint fd, u64 pos, u8 *buf, uint buflen);
 fn sys_read(proc: &Proc, fd: usize, pos: usize, buf: VirtAddr, buflen: usize) -> SysResult {
     proc.with(|proc| {
         Ok(proc.files.get(fd).ok_or(E::BadFd)?.read_va(
@@ -106,7 +104,7 @@ fn sys_read(proc: &Proc, fd: usize, pos: usize, buf: VirtAddr, buflen: usize) ->
     })
 }
 
-// uint write(uint fd, u64 pos, const char *buf, uint buflen);
+// uint write(uint fd, u64 pos, const u8 *buf, uint buflen);
 fn sys_write(proc: &Proc, fd: usize, pos: usize, buf: VirtAddr, buflen: usize) -> SysResult {
     proc.with(|proc| {
         Ok(proc.files.get(fd).ok_or(E::BadFd)?.write_va(
@@ -119,21 +117,21 @@ fn sys_write(proc: &Proc, fd: usize, pos: usize, buf: VirtAddr, buflen: usize) -
 }
 
 // bool readdir(uint fd, uint pos, DirEntry *entry);
-fn sys_readdir(proc: &Proc, fd: usize, pos: usize, entry: VirtAddr) -> SysResult {
+fn sys_readdir(proc: &Proc, fd: usize, pos: usize, entry: User<DirEntry>) -> SysResult {
     proc.with(|proc| {
         let Some(ent) = proc.files.get(fd).ok_or(E::BadFd)?.readdir(pos)? else {
             return Ok(0);
         };
 
-        entry.copy_type_to(proc.pagetable(), &ent, None)?;
+        entry.write(proc.pagetable(), &ent, None)?;
         Ok(1)
     })
 }
 
 // void stat(uint fd, struct Stat *entry);
-fn sys_stat(proc: &Proc, fd: usize, stat: VirtAddr) -> SysResult {
+fn sys_stat(proc: &Proc, fd: usize, stat: User<Stat>) -> SysResult {
     proc.with(|proc| {
-        stat.copy_type_to(
+        stat.write(
             proc.pagetable(),
             &proc.files.get(fd).ok_or(E::BadFd)?.stat()?,
             None,
@@ -142,7 +140,7 @@ fn sys_stat(proc: &Proc, fd: usize, stat: VirtAddr) -> SysResult {
     })
 }
 
-// void chdir(const char *path, uint len);
+// void chdir(const u8 *path, uint len);
 fn sys_chdir(proc: &Proc, path: VirtAddr, len: usize) -> SysResult {
     let mut buf = Vec::try_with_capacity(len)?;
     proc.with(|mut proc| {
@@ -161,12 +159,19 @@ fn sys_chdir(proc: &Proc, path: VirtAddr, len: usize) -> SysResult {
     })
 }
 
-// u32 spawn(const char *path, uint pathlen, const struct string **argv, uint nargs);
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KString {
+    ptr: VirtAddr,
+    len: usize,
+}
+
+// u32 spawn(const u8 *path, uint pathlen, const struct KString **argv, uint nargs);
 fn sys_spawn(
     proc: &Proc,
     path: VirtAddr,
     pathlen: usize,
-    argv: VirtAddr,
+    argv: User<KString>,
     nargs: usize,
 ) -> SysResult {
     let mut buf = Vec::try_with_capacity(pathlen)?;
@@ -178,23 +183,20 @@ fn sys_spawn(
             buf.set_len(pathlen);
         }
 
-        const PSZ: usize = core::mem::size_of::<usize>();
         for i in 0..nargs {
-            let ptr: VirtAddr = (argv + (i * 2) * PSZ).copy_type_from(proc.pagetable())?;
-            let len: usize = (argv + (i * 2 + 1) * PSZ).copy_type_from(proc.pagetable())?;
-            args.try_reserve(len)?;
+            let str = argv.read_nth(proc.pagetable(), i)?;
+            args.try_reserve(str.len)?;
 
-            ptr.copy_from(proc.pagetable(), &mut args.spare_capacity_mut()[..len])?;
+            str.ptr
+                .copy_from(proc.pagetable(), &mut args.spare_capacity_mut()[..str.len])?;
             unsafe {
-                args.set_len(args.len() + len);
+                args.set_len(args.len() + str.len);
             }
         }
 
         let mut buf = &args[..];
         for i in 0..nargs {
-            // this copy_type_from can't fail
-            let (arg, rest) =
-                buf.split_at((argv + (i * 2 + 1) * PSZ).copy_type_from(proc.pagetable())?);
+            let (arg, rest) = buf.split_at(argv.read_nth(proc.pagetable(), i).unwrap().len);
             arg_slices.push(arg);
             buf = rest;
         }
@@ -273,10 +275,10 @@ pub fn handle_syscall(proc: &Proc) {
         Some(Sys::Close) => sys_close(proc, a0),
         Some(Sys::Read) => sys_read(proc, a0, a1, VirtAddr(a2), a3),
         Some(Sys::Write) => sys_write(proc, a0, a1, VirtAddr(a2), a3),
-        Some(Sys::Readdir) => sys_readdir(proc, a0, a1, VirtAddr(a2)),
+        Some(Sys::Readdir) => sys_readdir(proc, a0, a1, VirtAddr(a2).into()),
         Some(Sys::Chdir) => sys_chdir(proc, VirtAddr(a0), a1),
-        Some(Sys::Spawn) => sys_spawn(proc, VirtAddr(a0), a1, VirtAddr(a2), a3),
-        Some(Sys::Stat) => sys_stat(proc, a0, VirtAddr(a1)),
+        Some(Sys::Spawn) => sys_spawn(proc, VirtAddr(a0), a1, VirtAddr(a2).into(), a3),
+        Some(Sys::Stat) => sys_stat(proc, a0, VirtAddr(a1).into()),
         Some(Sys::Sbrk) => sys_sbrk(proc, a0 as isize),
         Some(Sys::Waitpid) => sys_waitpid(proc, a0),
         Some(Sys::Exit) => sys_exit(proc, a0),

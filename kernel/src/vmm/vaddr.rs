@@ -1,4 +1,4 @@
-use core::{mem::MaybeUninit, ops::Range};
+use core::{marker::PhantomData, mem::MaybeUninit, ops::Range};
 
 use shared::sys::SysError;
 
@@ -216,5 +216,33 @@ impl Iterator for PhysIter<'_> {
             start: phys.0 as *mut u8,
             end: (phys.0 + size) as *mut u8,
         }))
+    }
+}
+
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct User<T>(VirtAddr, PhantomData<*const T>);
+
+impl<T: Copy> User<T> {
+    pub fn new(addr: VirtAddr) -> User<T> {
+        Self(addr, PhantomData)
+    }
+
+    pub fn read(self, pt: &PageTable) -> Result<T, VirtToPhysErr> {
+        self.0.copy_type_from(pt)
+    }
+
+    pub fn write(self, pt: &PageTable, val: &T, perms: Option<Pte>) -> Result<(), VirtToPhysErr> {
+        self.0.copy_type_to(pt, val, perms)
+    }
+
+    pub fn read_nth(self, pt: &PageTable, n: usize) -> Result<T, VirtToPhysErr> {
+        (self.0 + n * core::mem::size_of::<T>()).copy_type_from(pt)
+    }
+}
+
+impl<T: Copy> From<VirtAddr> for User<T> {
+    fn from(value: VirtAddr) -> Self {
+        Self::new(value)
     }
 }
