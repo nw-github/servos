@@ -17,9 +17,7 @@ fn main(args: &[*const u8]) -> usize {
         }
     }
 
-    if let Err(err) = sys::shutdown(restart) {
-        println!("error: {err:?}");
-    }
-
+    let Err(err) = sys::shutdown(restart);
+    println!("error: {err:?}");
     1
 }

@@ -57,11 +57,11 @@ pub const TIMER_INTERVAL: usize = 10_000_000 / 2;
 
 #[naked]
 #[link_section = ".text.trap"]
-#[repr(align(4))]
 extern "C" fn user_trap_vec() {
     unsafe {
         core::arch::asm!(
             r"
+            .align 4
             csrrw t0, sscratch, t0
 
             sd   ra, 0x08(t0)

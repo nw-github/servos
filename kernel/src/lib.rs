@@ -1,7 +1,6 @@
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![feature(const_mut_refs)]
-#![feature(asm_const)]
 #![feature(pointer_is_aligned_to)]
 
 pub mod arr;

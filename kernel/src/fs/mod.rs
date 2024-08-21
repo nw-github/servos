@@ -93,12 +93,12 @@ fn rw_va(
     let mut total = 0;
     for phys in buf.iter_phys(pt, len, perms) {
         let phys = phys.map(|r| unsafe { core::slice::from_mut_ptr_range(r) })?;
-        let read = f(pos, phys)?;
-        total += read;
-        if read < phys.len() {
+        let count = f(pos, phys)?;
+        total += count;
+        if count < phys.len() {
             break;
         }
-        pos += read as u64;
+        pos += count as u64;
     }
 
     Ok(total)

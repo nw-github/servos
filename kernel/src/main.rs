@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(naked_functions)]
-#![feature(asm_const)]
 #![feature(abi_riscv_interrupt)]
 #![feature(fn_align)]
 #![feature(allocator_api)]

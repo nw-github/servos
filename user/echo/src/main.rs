@@ -13,10 +13,10 @@ fn main(args: &[*const u8]) -> usize {
         .enumerate()
     {
         if i != 0 {
-            _ = sys::write(RawFd(0), None, &[b' ']);
+            _ = sys::write(RawFd(0), None, b" ");
         }
         _ = sys::write(RawFd(0), None, arg);
     }
-    _ = sys::write(RawFd(0), None, &[b'\n']);
+    _ = sys::write(RawFd(0), None, b"\n");
     0
 }
