@@ -46,6 +46,14 @@ impl Fd {
         .map(|p| p.1)
     }
 
+    pub fn write(&self, pos: u64, buf: &[u8]) -> FsResult<usize> {
+        if self.node.directory || self.node.readonly {
+            return Err(FsError::ReadOnly);
+        }
+
+        self.exec_with_pos(pos, |pos| self.dev.write(&self.node, pos, buf))
+    }
+
     pub fn read_va(&self, pos: u64, pt: &PageTable, va: VirtAddr, len: usize) -> FsResult<usize> {
         if self.node.directory {
             return Err(FsError::InvalidOp);
@@ -60,14 +68,6 @@ impl Fd {
         }
 
         self.exec_with_pos(pos, |pos| self.dev.write_va(&self.node, pos, pt, va, len))
-    }
-
-    pub fn write(&self, pos: u64, buf: &[u8]) -> FsResult<usize> {
-        if self.node.directory || self.node.readonly {
-            return Err(FsError::ReadOnly);
-        }
-
-        self.exec_with_pos(pos, |pos| self.dev.write(&self.node, pos, buf))
     }
 
     pub fn readdir(&self, cur: usize) -> FsResult<Option<DirEntry>> {

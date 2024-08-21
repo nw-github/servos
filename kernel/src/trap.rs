@@ -266,9 +266,10 @@ pub fn hart_install() {
 }
 
 pub fn map_trap_code(pt: &mut PageTable) -> bool {
-    pt.map_page(
+    pt.map_pages(
         vmm::page_number(user_trap_vec as usize).into(),
         USER_TRAP_VEC,
+        Page::SIZE,
         Pte::Rx,
     )
 }

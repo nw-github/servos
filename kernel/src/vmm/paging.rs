@@ -34,7 +34,6 @@ pub const fn page_offset(addr: usize) -> usize {
     addr & (Page::SIZE - 1)
 }
 
-
 /// SATP register
 ///
 /// 60 - 63 | Mode
@@ -44,7 +43,6 @@ pub const fn page_offset(addr: usize) -> usize {
 ///  0 - 43 | Physical Page Number (PPN)
 
 pub const SATP_MODE_SV39: u64 = 8;
-
 pub const SV39_LEVELS: usize = 3;
 
 bitflags::bitflags! {
@@ -59,9 +57,8 @@ bitflags::bitflags! {
         const A = 1 << 6;
         const D = 1 << 7;
 
-        /// Marks the page as owned by the page table, allowing the PageTable destructor to free it.
-        /// This is potentially dangerous, as it will be automatically freed as a *mut Page when the
-        /// PageTable destructor runs
+        /// Marks the page as owned by the page table, meaning it will be freed with the PageTable.
+        /// Pages marked with this bit must have been allocated with the layout of a Page.
         const Owned = 1 << 8;
         const Rsw1 = 1 << 9;
 
@@ -169,19 +166,6 @@ impl PageTable {
         assert!(perms.intersects(Pte::Rwx));
         assert!(va < VirtAddr::MAX);
         self.map_page_raw(Box::into_raw(pa).into(), va, perms | Pte::Owned)
-    }
-
-    /// Map the physical page containing `pa` to the virtual page `va` with permissions `perms`.
-    ///
-    /// Returns `false` if a required page table allocation fails when creating the mapping.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the virtual page is already mapped or the virtual address is too large.
-    pub fn map_page(&mut self, pa: PhysAddr, va: VirtAddr, perms: Pte) -> bool {
-        assert!(perms.intersects(Pte::Rwx));
-        assert!(va < VirtAddr::MAX);
-        self.map_page_raw(pa, va, perms & !Pte::Owned)
     }
 
     /// Map all pages in the contiguous physical range `pa` to `pa + size` to the contiguous virtual

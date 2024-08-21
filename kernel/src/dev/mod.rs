@@ -3,6 +3,7 @@ use core::mem::MaybeUninit;
 use crate::fs::FsResult;
 
 pub mod console;
+pub mod zero;
 pub mod null;
 
 pub trait Device {

@@ -83,17 +83,12 @@ impl VirtAddr {
         Ok(unsafe { buf.assume_init() })
     }
 
-    pub fn copy_type_to<T: Copy>(
-        self,
-        pt: &PageTable,
-        buf: &T,
-        perms: Option<Pte>,
-    ) -> Result<(), VirtToPhysErr> {
+    pub fn copy_type_to<T: Copy>(self, pt: &PageTable, buf: &T) -> Result<(), VirtToPhysErr> {
         // check align?
         let s = unsafe {
             core::slice::from_raw_parts(buf as *const T as *const u8, core::mem::size_of::<T>())
         };
-        self.copy_to(pt, s, perms)
+        self.copy_to(pt, s, None)
     }
 
     pub fn iter_phys(self, pt: &PageTable, size: usize, perms: Pte) -> PhysIter {
@@ -232,8 +227,8 @@ impl<T: Copy> User<T> {
         self.0.copy_type_from(pt)
     }
 
-    pub fn write(self, pt: &PageTable, val: &T, perms: Option<Pte>) -> Result<(), VirtToPhysErr> {
-        self.0.copy_type_to(pt, val, perms)
+    pub fn write(self, pt: &PageTable, val: &T) -> Result<(), VirtToPhysErr> {
+        self.0.copy_type_to(pt, val)
     }
 
     pub fn read_nth(self, pt: &PageTable, n: usize) -> Result<T, VirtToPhysErr> {

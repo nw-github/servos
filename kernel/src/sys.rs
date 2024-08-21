@@ -7,7 +7,7 @@ use shared::{
 
 use crate::{
     fs::{path::Path, vfs::Vfs, FsError},
-    hart::POWER,
+    power::POWER,
     proc::{ProcStatus, Process, Reg, PROC_LIST},
     vmm::{Pte, User, VirtAddr},
 };
@@ -123,7 +123,7 @@ fn sys_readdir(proc: &Proc, fd: usize, pos: usize, entry: User<DirEntry>) -> Sys
             return Ok(0);
         };
 
-        entry.write(proc.pagetable(), &ent, None)?;
+        entry.write(proc.pagetable(), &ent)?;
         Ok(1)
     })
 }
@@ -134,7 +134,6 @@ fn sys_stat(proc: &Proc, fd: usize, stat: User<Stat>) -> SysResult {
         stat.write(
             proc.pagetable(),
             &proc.files.get(fd).ok_or(E::BadFd)?.stat()?,
-            None,
         )?;
         Ok(0)
     })

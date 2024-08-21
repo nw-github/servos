@@ -25,7 +25,7 @@ use core::{
     ptr::{addr_of, addr_of_mut},
     sync::atomic::AtomicUsize,
 };
-use dev::{console::Console, null::NullDevice};
+use dev::{console::Console, null::NullDevice, zero::ZeroDevice};
 use fdt_rs::{
     base::{DevTree, DevTreeNode},
     prelude::{FallibleIterator, PropReader},
@@ -36,9 +36,9 @@ use fs::{
     path::Path,
     vfs::{Vfs, VFS},
 };
-use hart::{get_hart_info, HartInfo, PowerManagement, HART_INFO, HART_STACK_LEN, MAX_HARTS, POWER};
+use power::{PowerManagement, POWER};
 use plic::PLIC;
-use proc::{Process, Scheduler, USER_TRAP_FRAME};
+use proc::{Process, Scheduler, HART_FIRST_STACK, HART_STACK_LEN};
 use servos::{
     drivers::{Ns16550a, Syscon},
     heap::BlockAlloc,
@@ -54,7 +54,7 @@ use vmm::{Page, PageTable, Pte};
 mod dev;
 mod dump_fdt;
 mod fs;
-mod hart;
+mod power;
 mod plic;
 mod proc;
 mod sys;
@@ -142,19 +142,20 @@ extern "C" fn _start_hart(_hartid: usize, _satp: usize) -> ! {
             csrw    satp, a1
             sfence.vma zero, zero
 
-            # read the address of this harts sp from HART_INFO
             mv      tp, a0
-            la      t0, {hart_info}
-            li      t1, {hart_info_sz}
-            mul     t1, tp, t1
-            add     t0, t1, t0
-            ld      sp, {info_sp_offs}(t0)
+
+            # manual implementation of hart::stack_addr
+            li      t0, {stack_len}
+            li      t1, 0x1000
+            add     t0, t0, t1
+            mul     t0, tp, t0
+            li      sp, {first_stack}
+            sub     sp, sp, t0
 
             tail    {init}",
 
-            hart_info = sym HART_INFO,
-            hart_info_sz = const core::mem::size_of::<HartInfo>(),
-            info_sp_offs = const core::mem::offset_of!(HartInfo, sp),
+            first_stack = const HART_FIRST_STACK.0,
+            stack_len = const HART_STACK_LEN,
 
             init = sym kinithart,
             options(noreturn),
@@ -286,7 +287,7 @@ unsafe fn init_plic(dt: &DevTree, uart_plic_irq: Option<u32>) -> bool {
     true
 }
 
-unsafe fn init_vmem() {
+unsafe fn init_vmem(harts: usize) {
     let pt = unsafe { &mut *addr_of_mut!(KPAGETABLE) };
     unsafe {
         assert!(pt.map_identity(addr_of!(_text_start), addr_of!(_text_end), Pte::Rx));
@@ -318,39 +319,25 @@ unsafe fn init_vmem() {
     // and user programs, or it would cause a page fault as soon as the page table switched
     // when entering/exiting user mode
     assert!(trap::map_trap_code(pt));
-}
 
-unsafe fn init_harts() {
     use alloc::alloc::{Global, Layout};
 
-    let mut next_top = USER_TRAP_FRAME - Page::SIZE;
-    let pt = unsafe { &mut *addr_of_mut!(KPAGETABLE) };
-    // TODO: maybe look in the device tree for hart count
-    for (i, state) in unsafe { HART_INFO.iter_mut().enumerate() } {
+    for i in 0..harts {
         // TODO: make sure this hart is M + S + U mode capable
         if i != r_tp() && !matches!(sbi::hsm::hart_get_status(i), Ok(HartState::Stopped)) {
             continue;
         }
 
-        *state = HartInfo { sp: next_top };
-
-        let bottom = next_top - HART_STACK_LEN;
-        let stack = Global
-            .allocate(unsafe { Layout::from_size_align_unchecked(HART_STACK_LEN, 16) })
-            .expect("allocation failure allocating stack for a hart")
-            .as_ptr();
-        assert!(pt.map_pages(stack.into(), bottom, HART_STACK_LEN, Pte::Rw));
-        // extra Page::SIZE for guard page
-        next_top = bottom - Page::SIZE;
-    }
-
-    let satp = PageTable::make_satp(pt);
-    for hartid in 0..MAX_HARTS {
-        if matches!(sbi::hsm::hart_get_status(hartid), Ok(HartState::Stopped)) {
-            if let Err(err) = sbi::hsm::hart_start(hartid, _start_hart, satp) {
-                panic!("failed to start hart {hartid}: {err:?}");
-            }
-        }
+        assert!(pt.map_pages(
+            Global
+                .allocate(unsafe { Layout::from_size_align_unchecked(HART_STACK_LEN, 16) })
+                .expect("allocation failure allocating stack for a hart")
+                .as_ptr()
+                .into(),
+            proc::hart_stack_top(i) - HART_STACK_LEN,
+            HART_STACK_LEN,
+            Pte::Rw
+        ));
     }
 }
 
@@ -381,23 +368,37 @@ extern "C" fn kmain(hartid: usize, fdt: *const u8) -> ! {
             *POWER.lock() = PowerManagement::Syscon(syscon);
         }
 
+        // TODO: maybe look in the device tree for hart count
+        const HARTS: usize = 64;
+
         // note: the device tree lives somewhere in RAM outside the kernel area, it's potentially
         // invalidated once we initialize the heap over it
         init_heap(&dt);
-        init_vmem();
+        init_vmem(HARTS);
 
         // dump_fdt::dump_tree(dt).unwrap();
         if uart_plic_irq.is_some() {
             _ = CONSOLE_DEV.get_or_init(|| Arc::new(Console::new()));
         }
 
-        init_harts();
-        _start_hart(hartid, PageTable::make_satp(addr_of!(KPAGETABLE)))
+        let satp = PageTable::make_satp(addr_of!(KPAGETABLE));
+        for i in 0..HARTS {
+            if matches!(sbi::hsm::hart_get_status(i), Ok(HartState::Stopped)) {
+                if let Err(err) = sbi::hsm::hart_start(i, _start_hart, satp) {
+                    panic!("failed to start hart {i}: {err:?}");
+                }
+            }
+        }
+
+        _start_hart(hartid, satp)
     }
 }
 
 extern "C" fn kinithart(hartid: usize) -> ! {
-    println!("Hello world from hart {hartid}: sp: {}", get_hart_info().sp);
+    println!(
+        "Hello world from hart {hartid}: sp: {}",
+        proc::hart_stack_top(hartid)
+    );
 
     if BOOT_HART.load(core::sync::atomic::Ordering::SeqCst) == hartid {
         let mut devices = DeviceFs::new();
@@ -407,7 +408,10 @@ extern "C" fn kinithart(hartid: usize) -> ! {
                 .unwrap();
         }
         devices
-            .add_device(Path::new("zero").try_into().unwrap(), Arc::new(NullDevice))
+            .add_device(Path::new("zero").try_into().unwrap(), Arc::new(ZeroDevice))
+            .unwrap();
+        devices
+            .add_device(Path::new("null").try_into().unwrap(), Arc::new(NullDevice))
             .unwrap();
 
         static INITRD: &[u8] = include_bytes!("../../initrd.img");

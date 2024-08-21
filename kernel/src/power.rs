@@ -1,39 +1,14 @@
 use servos::{
     drivers::Syscon,
     lock::SpinLocked,
-    riscv::r_tp,
     sbi::{
         self,
         sys_reset::{ResetReason, ResetType},
     },
 };
 
-use crate::vmm::{Page, VirtAddr};
-
-pub const MAX_HARTS: usize = 256;
-pub const HART_STACK_LEN: usize = Page::SIZE * 4;
-
-#[derive(Clone, Copy)]
-pub struct HartInfo {
-    /// The TOP of the stack
-    pub sp: VirtAddr,
-}
-
-pub static mut HART_INFO: [HartInfo; MAX_HARTS] = [HartInfo { sp: VirtAddr(0) }; MAX_HARTS];
-
 pub static POWER: SpinLocked<PowerManagement> =
     SpinLocked::new(PowerManagement::Sbi(SbiPowerManagement));
-
-pub fn get_hart_info() -> HartInfo {
-    unsafe { HART_INFO[r_tp()] }
-}
-
-#[allow(unused)]
-pub fn set_hart_info(info: HartInfo) {
-    unsafe {
-        HART_INFO[r_tp()] = info;
-    }
-}
 
 pub enum PowerManagement {
     Sbi(SbiPowerManagement),

@@ -13,7 +13,7 @@ static mut GLOBAL_STATIC: usize = 5;
 static ZEROED: [u8; 0x2000] = [0; 0x2000];
 
 fn test_file_read() {
-    let fd = sys::open("1001_A.txt", OpenFlags::empty()).unwrap();
+    let fd = sys::open("/1001_A.txt", OpenFlags::empty()).unwrap();
     print!("page boundary read cross test (fd {fd:?}): ");
 
     let mut buf = ZEROED;
@@ -29,7 +29,7 @@ fn test_file_read() {
     _ = sys::close(fd);
     assert_eq!(
         sys::read(fd, 0, &mut buf),
-        Err(userstd::sys::SysError::BadFd)
+        Err(SysError::BadFd)
     );
 
     println!("GOOD");
@@ -46,7 +46,7 @@ fn test_global_static() {
 }
 
 fn test_fd_cursor() {
-    let fd = sys::open("test.txt", OpenFlags::empty()).unwrap();
+    let fd = sys::open("/test.txt", OpenFlags::empty()).unwrap();
     println!("file cursor test (fd {fd:?}): ");
 
     let mut buf = [0; 8];

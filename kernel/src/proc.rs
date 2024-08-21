@@ -9,7 +9,6 @@ use crate::{
         path::Path,
         vfs::{Fd, Vfs},
     },
-    hart::get_hart_info,
     trap::{self, USER_TRAP_VEC},
     vmm::{Page, PageTable, Pte, VirtAddr},
 };
@@ -147,6 +146,10 @@ pub struct Process {
 }
 
 pub const USER_TRAP_FRAME: VirtAddr = VirtAddr(USER_TRAP_VEC.0 - Page::SIZE);
+pub const HART_STACK_LEN: usize = Page::SIZE * 4;
+pub const HART_FIRST_STACK: VirtAddr = VirtAddr(USER_TRAP_FRAME.0 - Page::SIZE);
+
+const USER_STACK_SZ: usize = 1024 * 1024;
 
 impl Process {
     pub fn spawn(path: &Path, cwd: Fd, args: &[&[u8]]) -> Result<u32, SysError> {
@@ -200,11 +203,8 @@ impl Process {
             highest_va = highest_va.max(base + phdr.memsz as usize);
         }
 
-        // allocate 1MiB of stack
-        const STACK_SZ: usize = 0x100000;
-
         let mut sp = USER_TRAP_FRAME - Page::SIZE;
-        if !pt.map_new_pages(sp - STACK_SZ, STACK_SZ, Pte::Urw, true) {
+        if !pt.map_new_pages(sp - USER_STACK_SZ, USER_STACK_SZ, Pte::Urw, true) {
             return Err(SysError::NoMem);
         }
 
@@ -219,31 +219,30 @@ impl Process {
         sp = VirtAddr(sp.0 & !(core::mem::align_of::<VirtAddr>() - 1));
         for &arg in ptrs.iter().rev() {
             sp.0 -= core::mem::size_of::<VirtAddr>();
-            sp.copy_type_to(&pt, &arg, None)?;
+            sp.copy_type_to(&pt, &arg)?;
         }
 
         let pid = NEXTPID.fetch_add(1, Ordering::Relaxed);
+        let proc = Box::try_new(SpinLocked::new(Process {
+            pid,
+            pagetable: Box::into_raw(pt),
+            trapframe,
+            status: ProcStatus::Idle,
+            killed: None,
+            files: HoleArray::empty(),
+            cwd,
+            brk: highest_va,
+        }))?;
         let success = Self::enqueue_process(unsafe {
-            let proc = ProcessNode(NonNull::new_unchecked(Box::into_raw(Box::try_new(
-                SpinLocked::new(Process {
-                    pid,
-                    pagetable: Box::into_raw(pt),
-                    trapframe,
-                    status: ProcStatus::Idle,
-                    killed: None,
-                    files: HoleArray::empty(),
-                    cwd,
-                    brk: highest_va,
-                }),
-            )?)));
+            let proc = ProcessNode(NonNull::new_unchecked(Box::into_raw(proc)));
 
             addr_of_mut!((*trapframe).proc).write(proc);
             addr_of_mut!((*trapframe).handle_trap).write(trap::handle_u_trap);
             (*trapframe).ksatp = PageTable::make_satp(addr_of!(crate::KPAGETABLE));
-            (*trapframe).regs[Reg::PC as usize] = file.ehdr.entry as usize;
-            (*trapframe).regs[Reg::SP as usize] = sp.0;
-            (*trapframe).regs[Reg::A0 as usize] = args.len() + 1;
-            (*trapframe).regs[Reg::A1 as usize] = sp.0;
+            (*trapframe)[Reg::PC] = file.ehdr.entry as usize;
+            (*trapframe)[Reg::SP] = sp.0;
+            (*trapframe)[Reg::A0] = args.len() + 1;
+            (*trapframe)[Reg::A1] = sp.0;
 
             proc
         });
@@ -254,7 +253,7 @@ impl Process {
     pub unsafe fn resume(mut this: Guard<Process>) -> ! {
         this.status = ProcStatus::Running;
         this.trapframe().hartid = r_tp();
-        this.trapframe().ksp = get_hart_info().sp.0 as *mut u8;
+        this.trapframe().ksp = hart_stack_top(r_tp()).0 as *mut u8;
         let satp = PageTable::make_satp(this.pagetable());
         trap::return_to_user(Guard::drop_and_keep_token(this), satp)
     }
@@ -351,4 +350,9 @@ fn try_push_back<T>(vec: &mut VecDeque<T>, item: T) -> bool {
 
     vec.push_back(item);
     true
+}
+
+pub const fn hart_stack_top(hart: usize) -> VirtAddr {
+    // extra Page::SIZE for guard page
+    VirtAddr(HART_FIRST_STACK.0 - (hart * (HART_STACK_LEN + Page::SIZE)))
 }
