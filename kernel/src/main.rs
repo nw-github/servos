@@ -288,13 +288,10 @@ unsafe fn init_plic(dt: &DevTree, uart_plic_irq: Option<u32>) -> bool {
 
 unsafe fn init_vmem(harts: usize) {
     let pt = unsafe { &mut *addr_of_mut!(KPAGETABLE) };
-    unsafe {
-        assert!(pt.map_identity(addr_of!(_text_start), addr_of!(_text_end), Pte::Rx));
-        assert!(pt.map_identity(addr_of!(_rodata_start), addr_of!(_rodata_end), Pte::R));
-        assert!(pt.map_identity(addr_of!(_data_start), addr_of!(_bss_end), Pte::Rw));
-
-        assert!(pt.map_identity(PLIC.addr(), PLIC.addr().add(0x3ff_fffc), Pte::Rw));
-    }
+    assert!(pt.map_identity(addr_of!(_text_start), addr_of!(_text_end), Pte::Rx));
+    assert!(pt.map_identity(addr_of!(_rodata_start), addr_of!(_rodata_end), Pte::R));
+    assert!(pt.map_identity(addr_of!(_data_start), addr_of!(_bss_end), Pte::Rw));
+    assert!(pt.map_identity(PLIC.addr(), unsafe { PLIC.addr().add(0x3ff_fffc) }, Pte::Rw));
 
     // TODO: might be worth adding support for mega/gigapages to save some space on page tables
     let Range { start, end } = ALLOCATOR.lock().range();

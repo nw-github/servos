@@ -118,5 +118,9 @@ fn main(args: &[*const u8]) -> usize {
         printed = true;
     }
 
+    if !printed && !printdir(".", false, all) {
+        ecode = 1;
+    }
+
     ecode
 }
