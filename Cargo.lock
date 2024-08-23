@@ -23,13 +23,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b048fb63fd8b5923fc5aa7b340d8e156aec7ec02f0c78fa8a6ddc2613f6f71de"
 
 [[package]]
-name = "cat"
-version = "0.1.0"
-dependencies = [
- "userstd",
-]
-
-[[package]]
 name = "concat-idents"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -40,7 +33,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo"
+name = "coreutils"
 version = "0.1.0"
 dependencies = [
  "userstd",
@@ -88,24 +81,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "kill"
-version = "0.1.0"
-dependencies = [
- "userstd",
-]
-
-[[package]]
 name = "linked_list_allocator"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9afa463f5405ee81cdb9cc2baf37e08ec7e4c8209442b5d72c04cfb2cd6e6286"
-
-[[package]]
-name = "ls"
-version = "0.1.0"
-dependencies = [
- "userstd",
-]
 
 [[package]]
 name = "memoffset"
@@ -209,13 +188,6 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "strum",
-]
-
-[[package]]
-name = "shutdown"
-version = "0.1.0"
-dependencies = [
- "userstd",
 ]
 
 [[package]]

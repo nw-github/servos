@@ -122,6 +122,7 @@ pub enum MountError {
 }
 
 pub struct Vfs {
+    // FIXME: this should be R/W locked
     mounts: BTreeMap<OwnedPath, Arc<dyn FileSystem>>,
 }
 
