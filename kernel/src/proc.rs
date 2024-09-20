@@ -160,7 +160,7 @@ impl Process {
             return Err(SysError::BadArg);
         };
 
-        let mut pt = PageTable::try_alloc()?;
+        let mut pt = PageTable::alloc()?;
         let mut trapframe_page = Page::zeroed()?;
         let trapframe = &mut *trapframe_page as *mut _ as *mut TrapFrame;
         if !trap::map_trap_code(&mut pt)

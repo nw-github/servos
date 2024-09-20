@@ -116,7 +116,7 @@ fn sys_write(proc: &Proc, fd: usize, pos: usize, buf: VirtAddr, buflen: usize) -
     })
 }
 
-// bool readdir(uint fd, uint pos, DirEntry *entry);
+// bool readdir(uint fd, uint pos, struct DirEntry *entry);
 fn sys_readdir(proc: &Proc, fd: usize, pos: usize, entry: User<DirEntry>) -> SysResult {
     proc.with(|proc| {
         let Some(ent) = proc.files.get(fd).ok_or(E::BadFd)?.readdir(pos)? else {

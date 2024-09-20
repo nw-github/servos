@@ -17,11 +17,6 @@ impl Page {
     pub fn uninit() -> Result<Box<Page>, AllocError> {
         Box::try_new_uninit().map(|page| unsafe { page.assume_init() })
     }
-
-    pub unsafe fn cast<T>(&mut self) -> &mut T {
-        debug_assert!(align_of::<T>() <= align_of::<Self>());
-        unsafe { &mut *self.0.as_mut_ptr().cast() }
-    }
 }
 
 #[inline(always)]
@@ -83,8 +78,9 @@ pub enum PteLink {
 #[derive(Clone, Copy, Default)]
 pub struct PageTableEntry(u64);
 
+#[allow(unused)]
 impl PageTableEntry {
-    fn new(pa: PhysAddr, perms: u64) -> Self {
+    const fn new(pa: PhysAddr, perms: u64) -> Self {
         Self(((pa.0 as u64 >> 12) << 10) | (perms & 0x3ff) | Pte::V.bits())
     }
 
@@ -157,7 +153,7 @@ impl PageTable {
         PageTable([PageTableEntry(0); 512])
     }
 
-    pub fn try_alloc() -> Result<Box<PageTable>, AllocError> {
+    pub fn alloc() -> Result<Box<PageTable>, AllocError> {
         Box::<PageTable>::try_new_zeroed().map(|ptr| unsafe { ptr.assume_init() })
     }
 
@@ -263,7 +259,7 @@ impl PageTable {
                 PteLink::PageTable(next) => pt = unsafe { &mut *next },
                 PteLink::Leaf(_) => panic!("Page table {level} is a leaf node"),
                 PteLink::Invalid => {
-                    let Ok(next) = Self::try_alloc().map(Box::into_raw) else {
+                    let Ok(next) = Self::alloc().map(Box::into_raw) else {
                         return false;
                     };
                     *entry = PageTableEntry::new(next.into(), 0);
