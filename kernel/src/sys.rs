@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use servos::lock::SpinLocked;
 use shared::{
     io::{DirEntry, OpenFlags, Stat},
@@ -75,10 +75,10 @@ fn sys_getpid(proc: &Proc) -> SysResult {
 
 // uint open(const u8 *path, uint pathlen, u32 flags);
 fn sys_open(proc: &Proc, path: User<u8>, len: usize, flags: u32) -> SysResult {
-    let mut buf = Vec::try_with_capacity(len)?;
+    let mut buf = Box::try_new_uninit_slice(len)?;
     proc.with(|mut proc| {
-        let buf = path.read_arr(proc.pagetable(), buf.spare_capacity_mut())?;
-        let file = Vfs::open_in_cwd(&proc.cwd, &buf[..], OpenFlags::from_bits_truncate(flags))?;
+        let buf = path.read_arr(proc.pagetable(), &mut buf)?;
+        let file = Vfs::open_in_cwd(&proc.cwd, buf, OpenFlags::from_bits_truncate(flags))?;
         proc.files.push(file).map(|v| v.0).map_err(|_| E::NoMem)
     })
 }
@@ -137,9 +137,9 @@ fn sys_stat(proc: &Proc, fd: usize, stat: User<Stat>) -> SysResult {
 
 // void chdir(const u8 *path, uint len);
 fn sys_chdir(proc: &Proc, path: User<u8>, len: usize) -> SysResult {
-    let mut buf = Vec::try_with_capacity(len)?;
+    let mut buf = Box::try_new_uninit_slice(len)?;
     proc.with(|mut proc| {
-        let buf = path.read_arr(proc.pagetable(), buf.spare_capacity_mut())?;
+        let buf = path.read_arr(proc.pagetable(), &mut buf)?;
         let cwd = Vfs::open_in_cwd(&proc.cwd, buf, OpenFlags::empty())?;
         if !cwd.vnode().directory {
             return Err(E::BadArg);
@@ -165,15 +165,11 @@ fn sys_spawn(
     argv: User<KString>,
     nargs: usize,
 ) -> SysResult {
-    let mut buf = Vec::try_with_capacity(pathlen)?;
+    let mut pathbuf = Box::try_new_uninit_slice(pathlen)?;
     let mut args = Vec::new();
     let mut arg_slices = Vec::try_with_capacity(nargs)?;
-    let cwd = proc.with(|proc| {
-        path.read_arr(proc.pagetable(), buf.spare_capacity_mut())?;
-        unsafe {
-            buf.set_len(pathlen);
-        }
-
+    let (pathbuf, cwd) = proc.with(|proc| {
+        let pathbuf = path.read_arr(proc.pagetable(), &mut pathbuf)?;
         for i in 0..nargs {
             let str = argv.add(i).read(proc.pagetable())?;
             args.try_reserve(str.len)?;
@@ -192,10 +188,10 @@ fn sys_spawn(
             buf = rest;
         }
 
-        Ok::<_, E>(proc.cwd.clone())
+        Ok::<_, E>((pathbuf, proc.cwd.clone()))
     })?;
 
-    Process::spawn(Path::new(&buf), cwd, &arg_slices).map(|pid| pid as usize)
+    Process::spawn(Path::new(pathbuf), cwd, &arg_slices).map(|pid| pid as usize)
 }
 
 // usize waitpid(u32 pid);

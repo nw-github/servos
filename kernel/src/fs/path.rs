@@ -1,9 +1,10 @@
 use core::{
+    alloc::AllocError,
     borrow::Borrow,
     ops::{Deref, Range},
 };
 
-use alloc::{boxed::Box, collections::TryReserveError, vec::Vec};
+use alloc::boxed::Box;
 
 #[repr(transparent)]
 #[derive(Eq)]
@@ -111,12 +112,14 @@ impl<'a, T: AsRef<[u8]>> From<&'a T> for &'a Path {
 }
 
 impl TryInto<OwnedPath> for &Path {
-    type Error = TryReserveError;
+    type Error = AllocError;
 
     fn try_into(self) -> Result<OwnedPath, Self::Error> {
-        let mut v = Vec::try_with_capacity(self.0.len())?;
-        v.extend_from_slice(self.as_ref());
-        Ok(OwnedPath(v.into()))
+        let mut v = Box::try_new_uninit_slice(self.0.len())?;
+        unsafe {
+            core::ptr::copy_nonoverlapping(self.0.as_ptr().cast(), v.as_mut_ptr(), self.0.len());
+            Ok(OwnedPath(v.assume_init()))
+        }
     }
 }
 

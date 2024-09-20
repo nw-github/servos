@@ -1,6 +1,6 @@
 use core::mem::{size_of, MaybeUninit};
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::boxed::Box;
 use shared::io::{DirEntry, OpenFlags, Stat};
 
 use super::{path::Path, FileSystem, FsError, FsResult, VNode};
@@ -57,7 +57,7 @@ impl InitRd {
 
         let (inodes, files) =
             data.split_at_checked(header.ninodes as usize * size_of::<INode>())?;
-        let inodes = try_vec_from_slice(unsafe {
+        let inodes = try_box_slice(unsafe {
             core::slice::from_raw_parts(inodes.as_ptr().cast::<INode>(), header.ninodes as usize)
         })?;
         if !inodes.first().is_some_and(|i| i.typ == INODE_DIR) {
@@ -65,8 +65,8 @@ impl InitRd {
         }
 
         Some(Self {
-            inodes: inodes.into(),
-            data: try_vec_from_slice(files)?.into(),
+            inodes,
+            data: try_box_slice(files)?,
         })
     }
 
@@ -189,8 +189,10 @@ impl FileSystem for InitRd {
     }
 }
 
-fn try_vec_from_slice<T: Clone>(slc: &[T]) -> Option<Vec<T>> {
-    let mut vec = Vec::try_with_capacity(slc.len()).ok()?;
-    vec.extend(slc.iter().cloned());
-    Some(vec)
+fn try_box_slice<T: Clone>(slc: &[T]) -> Option<Box<[T]>> {
+    let mut vec = Box::try_new_uninit_slice(slc.len()).ok()?;
+    for (i, item) in slc.iter().enumerate() {
+        vec[i].write(item.clone());
+    }
+    Some(unsafe { vec.assume_init() })
 }

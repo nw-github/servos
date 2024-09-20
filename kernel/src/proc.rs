@@ -155,8 +155,8 @@ impl Process {
     pub fn spawn(path: &Path, cwd: Fd, args: &[&[u8]]) -> Result<u32, SysError> {
         let file = Vfs::open_in_cwd(&cwd, path, OpenFlags::empty())?;
         let stat = file.stat()?;
-        let mut buf = Vec::try_with_capacity(stat.size)?;
-        let Some(file) = ElfFile::new(file.read(0, buf.spare_capacity_mut())?) else {
+        let mut buf = Box::try_new_uninit_slice(stat.size)?;
+        let Some(file) = ElfFile::new(file.read(0, &mut buf)?) else {
             return Err(SysError::BadArg);
         };
 
