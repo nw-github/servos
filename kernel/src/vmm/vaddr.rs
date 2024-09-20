@@ -59,11 +59,11 @@ impl VirtAddr {
 
     /// Copy `buf.len()` bytes from address `self` in page table `pt`. Fails if any pages are not
     /// readable or accessible from user mode. May fail after a partial write.
-    pub fn copy_from(
+    pub fn copy_from<'a>(
         self,
         pt: &PageTable,
-        mut buf: &mut [MaybeUninit<u8>],
-    ) -> Result<(), VirtToPhysErr> {
+        mut buf: &'a mut [MaybeUninit<u8>],
+    ) -> Result<&'a mut [u8], VirtToPhysErr> {
         for phys in self.iter_phys(pt, buf.len(), Pte::U | Pte::R) {
             let phys = phys?;
             unsafe {
@@ -73,25 +73,10 @@ impl VirtAddr {
             }
         }
 
-        Ok(())
+        Ok(unsafe { MaybeUninit::slice_assume_init_mut(buf) })
     }
 
-    pub fn copy_type_from<T: Copy>(self, pt: &PageTable) -> Result<T, VirtToPhysErr> {
-        // check align?
-        let mut buf = MaybeUninit::<T>::uninit();
-        self.copy_from(pt, buf.as_bytes_mut())?;
-        Ok(unsafe { buf.assume_init() })
-    }
-
-    pub fn copy_type_to<T: Copy>(self, pt: &PageTable, buf: &T) -> Result<(), VirtToPhysErr> {
-        // check align?
-        let s = unsafe {
-            core::slice::from_raw_parts(buf as *const T as *const u8, core::mem::size_of::<T>())
-        };
-        self.copy_to(pt, s, None)
-    }
-
-    pub fn iter_phys(self, pt: &PageTable, size: usize, perms: Pte) -> PhysIter {
+    pub const fn iter_phys(self, pt: &PageTable, size: usize, perms: Pte) -> PhysIter {
         PhysIter {
             va: self,
             size,
@@ -100,11 +85,11 @@ impl VirtAddr {
         }
     }
 
-    pub fn next_page(self) -> VirtAddr {
+    pub const fn next_page(self) -> VirtAddr {
         VirtAddr(page_number(self.0 + Page::SIZE))
     }
 
-    pub fn page(self) -> VirtAddr {
+    pub const fn page(self) -> VirtAddr {
         VirtAddr(page_number(self.0))
     }
 
@@ -219,25 +204,87 @@ impl Iterator for PhysIter<'_> {
 pub struct User<T>(VirtAddr, PhantomData<*const T>);
 
 impl<T: Copy> User<T> {
-    pub fn new(addr: VirtAddr) -> User<T> {
+    pub const fn new(addr: VirtAddr) -> User<T> {
         Self(addr, PhantomData)
     }
 
     pub fn read(self, pt: &PageTable) -> Result<T, VirtToPhysErr> {
-        self.0.copy_type_from(pt)
+        // check align?
+        let mut buf = MaybeUninit::<T>::uninit();
+        self.0.copy_from(pt, buf.as_bytes_mut())?;
+        Ok(unsafe { buf.assume_init() })
+    }
+
+    pub fn read_arr<'a>(
+        self,
+        pt: &PageTable,
+        buf: &'a mut [MaybeUninit<T>],
+    ) -> Result<&'a mut [T], VirtToPhysErr> {
+        self.0.copy_from(pt, MaybeUninit::slice_as_bytes_mut(buf))?;
+        Ok(unsafe { MaybeUninit::slice_assume_init_mut(buf) })
     }
 
     pub fn write(self, pt: &PageTable, val: &T) -> Result<(), VirtToPhysErr> {
-        self.0.copy_type_to(pt, val)
+        // check align?
+        self.0.copy_to(pt, as_byte_slice(val), None)
     }
 
-    pub fn read_nth(self, pt: &PageTable, n: usize) -> Result<T, VirtToPhysErr> {
-        (self.0 + n * core::mem::size_of::<T>()).copy_type_from(pt)
+    pub fn write_arr(
+        self,
+        pt: &PageTable,
+        buf: &[T],
+        perms: Option<Pte>,
+    ) -> Result<(), VirtToPhysErr> {
+        self.0.copy_to(pt, as_byte_slice(buf), perms)
+    }
+
+    pub const fn add(self, v: usize) -> User<T> {
+        User(
+            VirtAddr(self.addr().0 + v * core::mem::size_of::<T>()),
+            PhantomData,
+        )
+    }
+
+    pub const fn byte_add(self, v: usize) -> User<T> {
+        User(VirtAddr(self.addr().0 + v), PhantomData)
+    }
+
+    pub const fn sub(self, v: usize) -> User<T> {
+        User(
+            VirtAddr(self.addr().0 - v * core::mem::size_of::<T>()),
+            PhantomData,
+        )
+    }
+
+    pub const fn byte_sub(self, v: usize) -> User<T> {
+        User(VirtAddr(self.addr().0 - v), PhantomData)
+    }
+
+    pub const fn addr(self) -> VirtAddr {
+        self.0
     }
 }
 
 impl<T: Copy> From<VirtAddr> for User<T> {
     fn from(value: VirtAddr) -> Self {
         Self::new(value)
+    }
+}
+
+impl<T: Copy> From<usize> for User<T> {
+    fn from(value: usize) -> Self {
+        Self(VirtAddr(value), PhantomData)
+    }
+}
+
+impl<T> From<User<T>> for VirtAddr {
+    fn from(value: User<T>) -> Self {
+        value.0
+    }
+}
+
+fn as_byte_slice<T: ?Sized>(v: &T) -> &[u8] {
+    unsafe {
+        core::slice::from_raw_parts(core::ptr::from_ref(v).cast(), core::mem::size_of_val(v))
     }
 }

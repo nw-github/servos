@@ -10,7 +10,7 @@ use crate::{
         vfs::{Fd, Vfs},
     },
     trap::{self, USER_TRAP_VEC},
-    vmm::{Page, PageTable, Pte, VirtAddr},
+    vmm::{Page, PageTable, Pte, User, VirtAddr},
 };
 use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
 use servos::{
@@ -184,42 +184,43 @@ impl Process {
             if phdr.flags & PF_X != 0 {
                 perms |= Pte::X;
             }
-            let base = VirtAddr(phdr.vaddr as usize);
-            if !pt.map_new_pages(base, phdr.memsz as usize, perms, false) {
+            let base = User::from(phdr.vaddr as usize);
+            if !pt.map_new_pages(base.addr(), phdr.memsz as usize, perms, false) {
                 return Err(SysError::NoMem);
             }
 
             let filesz = phdr.filesz as usize;
-            base.copy_to(
+            base.write_arr(
                 &pt,
                 &file.raw[phdr.offset as usize..][..filesz],
                 Some(Pte::empty()),
             )?;
 
-            (base + filesz)
+            base.add(filesz)
+                .addr()
                 .iter_phys(&pt, (phdr.memsz - phdr.filesz) as usize, perms)
                 .zero();
 
-            highest_va = highest_va.max(base + phdr.memsz as usize);
+            highest_va = highest_va.max(base.add(phdr.memsz as usize).addr());
         }
 
-        let mut sp = USER_TRAP_FRAME - Page::SIZE;
-        if !pt.map_new_pages(sp - USER_STACK_SZ, USER_STACK_SZ, Pte::Urw, true) {
+        let mut sp = User::from(USER_TRAP_FRAME - Page::SIZE);
+        if !pt.map_new_pages(sp.sub(USER_STACK_SZ).addr(), USER_STACK_SZ, Pte::Urw, true) {
             return Err(SysError::NoMem);
         }
 
         let mut ptrs = Vec::try_with_capacity(args.len() + 1)?;
         for arg in core::iter::once(path.as_ref()).chain(args.iter().cloned()) {
             // stack is already zeroed, so just add 1 for the null terminator
-            sp.0 -= arg.len() + 1;
-            sp.copy_to(&pt, arg, None)?;
+            sp = sp.sub(arg.len() + 1);
+            sp.write_arr(&pt, arg, None)?;
             ptrs.push(sp);
         }
 
-        sp = VirtAddr(sp.0 & !(core::mem::align_of::<VirtAddr>() - 1));
-        for &arg in ptrs.iter().rev() {
-            sp.0 -= core::mem::size_of::<VirtAddr>();
-            sp.copy_type_to(&pt, &arg)?;
+        let mut sp = User::from(sp.addr().0 & !(core::mem::align_of::<VirtAddr>() - 1));
+        for arg in ptrs.iter().rev() {
+            sp = sp.sub(1);
+            sp.write(&pt, arg)?;
         }
 
         let pid = NEXTPID.fetch_add(1, Ordering::Relaxed);
@@ -240,9 +241,9 @@ impl Process {
             addr_of_mut!((*trapframe).handle_trap).write(trap::handle_u_trap);
             (*trapframe).ksatp = PageTable::make_satp(addr_of!(crate::KPAGETABLE));
             (*trapframe)[Reg::PC] = file.ehdr.entry as usize;
-            (*trapframe)[Reg::SP] = sp.0;
+            (*trapframe)[Reg::SP] = sp.addr().0;
             (*trapframe)[Reg::A0] = args.len() + 1;
-            (*trapframe)[Reg::A1] = sp.0;
+            (*trapframe)[Reg::A1] = sp.addr().0;
 
             proc
         });

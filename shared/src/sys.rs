@@ -22,7 +22,7 @@ pub enum Sys {
 #[derive(strum::FromRepr, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
 pub enum SysError {
-    BadSyscall = 1,
+    NoSys = 1,
     BadArg,
     NotFound,
     BadFd,
