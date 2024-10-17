@@ -1,5 +1,13 @@
 initrd:
-    cargo b
+    cargo b --bin init
+    cargo b --bin ls
+    cargo b --bin sh
+    cargo b --bin tests
+    cargo b --bin bf
+    cargo b --bin cat
+    cargo b --bin shutdown
+    cargo b --bin echo
+    cargo b --bin kill
     mkdir -p initrd/bin
 
     rsync target/riscv64imac-unknown-none-elf/debug/init initrd/bin/init
