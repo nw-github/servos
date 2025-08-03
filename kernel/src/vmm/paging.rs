@@ -29,13 +29,13 @@ pub const fn page_offset(addr: usize) -> usize {
     addr & (Page::SIZE - 1)
 }
 
-/// SATP register
-///
-/// 60 - 63 | Mode
-///
-/// 44 - 59 | Address Space ID (ASID)
-///
-///  0 - 43 | Physical Page Number (PPN)
+// SATP register
+//
+// 60 - 63 | Mode
+//
+// 44 - 59 | Address Space ID (ASID)
+//
+//  0 - 43 | Physical Page Number (PPN)
 
 pub const SATP_MODE_SV39: u64 = 8;
 pub const SV39_LEVELS: usize = 3;

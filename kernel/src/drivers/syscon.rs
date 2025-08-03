@@ -10,7 +10,11 @@ impl Syscon {
     /// # Safety
     ///
     /// .
-    pub unsafe fn init_with_magic(base: *mut u32, shutdown_magic: u32, restart_magic: u32) -> Self {
+    pub const unsafe fn init_with_magic(
+        base: *mut u32,
+        shutdown_magic: u32,
+        restart_magic: u32,
+    ) -> Self {
         Self {
             base,
             shutdown_magic,

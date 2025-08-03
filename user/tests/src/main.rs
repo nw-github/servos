@@ -27,21 +27,18 @@ fn test_file_read() {
     );
 
     _ = sys::close(fd);
-    assert_eq!(
-        sys::read(fd, 0, &mut buf),
-        Err(SysError::BadFd)
-    );
+    assert_eq!(sys::read(fd, 0, &mut buf), Err(SysError::BadFd));
 
     println!("GOOD");
 }
 
 fn test_global_static() {
     unsafe {
-        assert_eq!(GLOBAL_STATIC, 5);
+        assert_eq!({ GLOBAL_STATIC }, 5);
         while GLOBAL_STATIC != 0 {
             GLOBAL_STATIC -= 1;
         }
-        assert_eq!(GLOBAL_STATIC, 0);
+        assert_eq!({ GLOBAL_STATIC }, 0);
     }
 }
 

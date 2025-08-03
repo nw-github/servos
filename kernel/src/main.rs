@@ -1,15 +1,11 @@
 #![no_std]
 #![no_main]
-#![feature(naked_functions)]
 #![feature(abi_riscv_interrupt)]
 #![feature(fn_align)]
 #![feature(allocator_api)]
-#![feature(new_uninit)]
 #![feature(try_with_capacity)]
 #![feature(pointer_is_aligned_to)]
 #![feature(slice_from_ptr_range)]
-#![feature(ptr_sub_ptr)]
-#![feature(cell_update)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_as_bytes)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -17,7 +13,6 @@
 use alloc::sync::Arc;
 use core::{
     alloc::Allocator,
-    arch::asm,
     cell::OnceCell,
     mem::MaybeUninit,
     ops::Range,
@@ -35,8 +30,8 @@ use fs::{
     path::Path,
     vfs::{Vfs, VFS},
 };
-use power::{PowerManagement, POWER};
 use plic::PLIC;
+use power::{PowerManagement, POWER};
 use proc::{Process, Scheduler, HART_FIRST_STACK, HART_STACK_LEN};
 use servos::{
     drivers::{Ns16550a, Syscon},
@@ -53,8 +48,8 @@ use vmm::{Page, PageTable, Pte};
 mod dev;
 mod dump_fdt;
 mod fs;
-mod power;
 mod plic;
+mod power;
 mod proc;
 mod sys;
 mod trap;
@@ -95,17 +90,17 @@ fn on_panic(info: &core::panic::PanicInfo) -> ! {
 
     loop {
         unsafe {
-            asm!("wfi", options(nomem, nostack));
+            core::arch::asm!("wfi", options(nomem, nostack));
         }
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 #[no_mangle]
 #[link_section = ".text.init"]
 extern "C" fn _start(_hartid: usize, _fdt: *const u8) -> ! {
     unsafe {
-        asm!(
+        core::arch::naked_asm!(
             r"
             .option push
             .option norelax
@@ -121,15 +116,14 @@ extern "C" fn _start(_hartid: usize, _fdt: *const u8) -> ! {
             init = sym kmain,
             stack = sym BOOT_STACK,
             stack_len = const HART_STACK_LEN,
-            options(noreturn),
         );
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn _start_hart(_hartid: usize, _satp: usize) -> ! {
     unsafe {
-        asm!(
+        core::arch::naked_asm!(
             r"
             .option push
             .option norelax
@@ -157,7 +151,6 @@ extern "C" fn _start_hart(_hartid: usize, _satp: usize) -> ! {
             stack_len = const HART_STACK_LEN,
 
             init = sym kinithart,
-            options(noreturn),
         );
     }
 }

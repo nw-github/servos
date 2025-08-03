@@ -149,7 +149,7 @@ impl FileSystem for InitRd {
                 len,
             );
         }
-        Ok(unsafe { MaybeUninit::slice_assume_init_mut(&mut buf[..len]) })
+        Ok(unsafe { buf[..len].assume_init_mut() })
     }
 
     fn write(&self, _vn: &VNode, _pos: u64, _buf: &[u8]) -> FsResult<usize> {

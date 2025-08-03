@@ -148,7 +148,7 @@ impl Vm {
 
     pub fn run_for(&mut self, steps: Option<usize>) -> StepResult {
         let mut count = 0;
-        while steps.map_or(true, |steps| count < steps) {
+        while steps.is_none_or(|steps| count < steps) {
             count += 1;
             match self.step() {
                 StepResult::Continue => continue,

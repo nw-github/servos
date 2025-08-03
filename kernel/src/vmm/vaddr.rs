@@ -73,7 +73,7 @@ impl VirtAddr {
             }
         }
 
-        Ok(unsafe { MaybeUninit::slice_assume_init_mut(buf) })
+        Ok(unsafe { buf.assume_init_mut() })
     }
 
     pub const fn iter_phys(self, pt: &PageTable, size: usize, perms: Pte) -> PhysIter {
@@ -220,8 +220,8 @@ impl<T: Copy> User<T> {
         pt: &PageTable,
         buf: &'a mut [MaybeUninit<T>],
     ) -> Result<&'a mut [T], VirtToPhysErr> {
-        self.0.copy_from(pt, MaybeUninit::slice_as_bytes_mut(buf))?;
-        Ok(unsafe { MaybeUninit::slice_assume_init_mut(buf) })
+        self.0.copy_from(pt, buf.as_bytes_mut())?;
+        Ok(unsafe { buf.assume_init_mut() })
     }
 
     pub fn write(self, pt: &PageTable, val: &T) -> Result<(), VirtToPhysErr> {
@@ -284,7 +284,5 @@ impl<T> From<User<T>> for VirtAddr {
 }
 
 fn as_byte_slice<T: ?Sized>(v: &T) -> &[u8] {
-    unsafe {
-        core::slice::from_raw_parts(core::ptr::from_ref(v).cast(), core::mem::size_of_val(v))
-    }
+    unsafe { core::slice::from_raw_parts(core::ptr::from_ref(v).cast(), core::mem::size_of_val(v)) }
 }

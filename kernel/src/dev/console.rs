@@ -101,7 +101,7 @@ impl Buffer {
         }
 
         self.read += count;
-        unsafe { MaybeUninit::slice_assume_init_mut(slice) }
+        unsafe { slice.assume_init_mut() }
     }
 
     fn handle_esc(&mut self, esc: u8, ch: u8) {

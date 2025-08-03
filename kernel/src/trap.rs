@@ -55,11 +55,11 @@ impl TrapCause {
 pub const USER_TRAP_VEC: VirtAddr = VirtAddr(VirtAddr::MAX.0 - Page::SIZE);
 pub const TIMER_INTERVAL: usize = 10_000_000 / 2;
 
-#[naked]
+#[unsafe(naked)]
 #[link_section = ".text.trap"]
 extern "C" fn user_trap_vec() {
     unsafe {
-        core::arch::asm!(
+        core::arch::naked_asm!(
             r"
             .align 4
             csrrw t0, sscratch, t0
@@ -118,17 +118,15 @@ extern "C" fn user_trap_vec() {
             stack = const core::mem::offset_of!(crate::proc::TrapFrame, ksp),
             handle = const core::mem::offset_of!(crate::proc::TrapFrame, handle_trap),
             proc = const core::mem::offset_of!(crate::proc::TrapFrame, proc),
-
-            options(noreturn),
         );
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 #[link_section = ".text.trap"]
 extern "C" fn __return_to_user(satp: usize) -> ! {
     unsafe {
-        core::arch::asm!(
+        core::arch::naked_asm!(
             r"
             li   t0, {trap_frame}
             csrw sscratch, t0
@@ -175,7 +173,6 @@ extern "C" fn __return_to_user(satp: usize) -> ! {
             ld   t0,  0x28(t0)
             sret
             ",
-            options(noreturn),
             trap_frame = const USER_TRAP_FRAME.0,
         )
     }
