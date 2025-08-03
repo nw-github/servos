@@ -45,6 +45,10 @@ impl Path {
     pub fn is_empty(&self) -> bool {
         self.components().next().is_none()
     }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 impl PartialEq for Path {

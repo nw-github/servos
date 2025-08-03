@@ -28,3 +28,5 @@ If you have `just` installed, you can run `just initrd` to do this automatically
 ```sh
 cargo r --bin servos
 ```
+
+To close QEMU, press Ctrl+A, x.

@@ -60,7 +60,7 @@ impl InitRd {
         let inodes = try_box_slice(unsafe {
             core::slice::from_raw_parts(inodes.as_ptr().cast::<INode>(), header.ninodes as usize)
         })?;
-        if !inodes.first().is_some_and(|i| i.typ == INODE_DIR) {
+        if inodes.first().is_none_or(|i| i.typ != INODE_DIR) {
             return None;
         }
 

@@ -11,13 +11,8 @@ pub extern crate alloc;
 #[panic_handler]
 fn on_panic(info: &core::panic::PanicInfo) -> ! {
     println!("panic: {info}");
+    _ = sys::exit(1);
 
-    _ = sys::kill(sys::getpid());
-
-    #[allow(deref_nullptr)]
-    unsafe {
-        *core::ptr::null_mut::<u8>() = 0;
-    }
     loop {}
 }
 
@@ -28,7 +23,10 @@ extern "Rust" {
 #[no_mangle]
 extern "C" fn _start(argc: usize, argv: *const *const u8) {
     // open stdout and stdin
-    _ = sys::open("/dev/uart0", OpenFlags::ReadWrite).unwrap();
+    if sys::open("/dev/uart0", OpenFlags::ReadWrite).is_err() {
+        _ = sys::debug("Failed to open /dev/uart0");
+        _ = sys::exit(1);
+    }
     _ = sys::open("/dev/uart0", OpenFlags::empty()).unwrap();
 
     let bottom = sys::sbrk(0).unwrap();

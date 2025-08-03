@@ -242,6 +242,17 @@ fn sys_exit(proc: &Proc, ecode: usize) -> SysResult {
     Ok(0)
 }
 
+// void debug(const u8 *str, uint strlen);
+fn sys_debug(proc: &Proc, str: User<u8>, strlen: usize) -> SysResult {
+    let mut pathbuf = Box::try_new_uninit_slice(strlen)?;
+    proc.with(|proc| {
+        let pathbuf = str.read_arr(proc.pagetable(), &mut pathbuf)?;
+        let arg = str::from_utf8(pathbuf).map_err(|_| E::BadArg)?;
+        crate::println!("[PID {}] debug(): {arg}", proc.pid);
+        Ok(0)
+    })
+}
+
 pub fn handle_syscall(proc: &Proc) {
     let (syscall_no, a0, a1, a2, a3) = proc.with(|mut proc| {
         let trapframe = proc.trapframe();
@@ -269,6 +280,7 @@ pub fn handle_syscall(proc: &Proc) {
         Some(Sys::Sbrk) => sys_sbrk(proc, a0 as isize),
         Some(Sys::Waitpid) => sys_waitpid(proc, a0),
         Some(Sys::Exit) => sys_exit(proc, a0),
+        Some(Sys::Debug) => sys_debug(proc, User::from(a0), a1),
         None => Err(E::NoSys),
     };
 

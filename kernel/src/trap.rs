@@ -295,7 +295,10 @@ fn handle_external_intr() {
     };
 
     if irq.is_uart0() {
-        let ch = CONS.lock().read().unwrap();
+        let Some(ch) = CONS.lock().read() else {
+            // println!("Got spurious uart0 interrupt");
+            return;
+        };
         // println!("UART interrupt: {ch:#04x} ({})", ch as char);
         unsafe {
             if !CONSOLE_DEV.get().unwrap().put(ch) {

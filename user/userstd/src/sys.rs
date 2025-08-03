@@ -261,6 +261,12 @@ pub fn exit(ecode: usize) -> Result<Infallible, SysError> {
     Err(syscall!(Sys::Exit, ecode).unwrap_err())
 }
 
+pub fn debug(str: impl AsRef<[u8]>) -> Result<(), SysError> {
+    let str = str.as_ref();
+    syscall!(Sys::Debug, str.as_ptr() as usize, str.len())?;
+    Ok(())
+}
+
 #[repr(C)]
 pub struct KString<'a> {
     buf: *const u8,

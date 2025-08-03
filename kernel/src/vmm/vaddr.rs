@@ -48,7 +48,7 @@ impl VirtAddr {
         for phys in self.iter_phys(pt, buf.len(), perms.unwrap_or(Pte::U | Pte::W)) {
             let phys = phys?;
             unsafe {
-                let len = phys.end.sub_ptr(phys.start);
+                let len = phys.end.offset_from_unsigned(phys.start);
                 core::ptr::copy_nonoverlapping(buf.as_ptr(), phys.start, len);
                 buf = &buf[len..];
             }
@@ -67,7 +67,7 @@ impl VirtAddr {
         for phys in self.iter_phys(pt, buf.len(), Pte::U | Pte::R) {
             let phys = phys?;
             unsafe {
-                let len = phys.end.sub_ptr(phys.start);
+                let len = phys.end.offset_from_unsigned(phys.start);
                 core::ptr::copy_nonoverlapping(phys.start, buf.as_mut_ptr().cast(), len);
                 buf = &mut buf[len..];
             }
